@@ -81,16 +81,13 @@ const wm=document.getElementById("wm"),shade=document.getElementById("shade");
 const words=[...document.querySelectorAll('#head .w')];
 
 window.seek=function(t){
-  // headline: words from the right, exit together
-  const hi=OUT(prog(t,0,.5));
-  words.forEach((el,i)=>{const k=OUT(prog(t,.05+i*.07,.55));
-    const out=SOFT(prog(t,HEAD_OUT,.7));
-    el.style.opacity=(k>0?Math.min(1,k*3):0)*(1-out);
-    el.style.transform=`translateY(${(1-k)*34+out*46}px)`;});
+  // everything is on screen from the first frame; only the exit is animated (headline + shade slide down together, softly)
+  const out=SOFT(prog(t,HEAD_OUT,.7));
+  words.forEach(el=>{el.style.opacity=1-out;el.style.transform=`translateY(${out*60}px)`;});
   const se=SOFT(prog(t,HEAD_OUT,.75));
-  shade.style.opacity=GRAD*OUT(prog(t,0,.6))*(1-se);
-  shade.style.transform=`translateY(${(1-OUT(prog(t,0,.6)))*160+se*160}px)`;
-  wm.style.opacity=.38*OUT(prog(t,.4,.8));
+  shade.style.opacity=GRAD*(1-se);
+  shade.style.transform=`translateY(${se*160}px)`;
+  wm.style.opacity=.38;
 };
 window.ready=document.fonts.ready.then(()=>{fit();window.seek(0);});
 window.seek(0);
