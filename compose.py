@@ -49,9 +49,11 @@ else:
     bgchain = "[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1,fps=30,format=yuv420p[bg]"
 fc += (";" + bgchain +
        ";[bg][2:v]overlay=0:0:eof_action=pass[a]"
-       f";[a][3:v]overlay=0:0:enable='gte(t,{ANIM_T})':shortest=0[b]"
+       f";[a][3:v]overlay=0:0:enable='gte(t,{ANIM_T})':shortest=0[a2]"
+       ";[a2][4:v]overlay=0:0:enable='lt(t,0.04)':shortest=0[b]"
        f";[b][badge]overlay={BX}:{BY}:eof_action=pass,format=yuv420p[v]")
 cmd = ['ffmpeg', '-y', '-loglevel', 'error', '-i', IN, '-i', BADGE, '-i', os.path.join(W, 'overlay.mov'), '-loop', '1', '-i', os.path.join(W, 'static.png'),
+       '-loop', '1', '-i', os.path.join(W, 'cover.png'),
        '-filter_complex', fc, '-map', '[v]', '-map', '0:a?', '-t', f'{L:.3f}',
        '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '18', '-pix_fmt', 'yuv420p',
        '-color_primaries', 'bt709', '-color_trc', 'bt709', '-colorspace', 'bt709',

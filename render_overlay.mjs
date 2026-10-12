@@ -51,6 +51,8 @@ for (let i = 0; i < n; i++) {
 ff.stdin.end();
 if (await new Promise(r => ff.on('close', r))) { console.error('ffmpeg failed'); process.exit(1); }
 fs.writeFileSync(path.join(outDir, 'static.png'), await shot(total + 0.5));
+// cover frame: fully composed headline + shade + watermark, used as the very first video frame
+fs.writeFileSync(path.join(outDir, 'cover.png'), await shot(Math.min(1.8, outT - 0.5)));
 if (opt('stills')) {
   for (const t of opt('stills').split(',').map(Number)) fs.writeFileSync(path.join(outDir, `t${t.toFixed(2)}.png`), await shot(t));
 }
