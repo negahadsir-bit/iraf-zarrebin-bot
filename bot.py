@@ -63,9 +63,8 @@ def output(k, v):
     p = os.environ.get('GITHUB_OUTPUT')
     if p: open(p, 'a').write(f'{k}={v}\n')
 
-def check():
-    s = load()
-    r = call('getUpdates', {'offset': s['offset'], 'timeout': 0, 'allowed_updates': json.dumps(['message'])})
+def process(s, timeout=0):
+    r = call('getUpdates', {'offset': s['offset'], 'timeout': timeout, 'allowed_updates': json.dumps(['message'])}, timeout=timeout + 30)
     for u in r.get('result', []):
         s['offset'] = u['update_id'] + 1
         m = u.get('message')
@@ -105,6 +104,10 @@ def check():
                 s['jobs'].append({'chat': chat, 'file_id': p['file_id'], 'headline': text, 'layout': p.get('layout', ''), 'id': uuid.uuid4().hex[:8]})
                 say(chat, 'در صف ساخت قرار گرفت. تا چند دقیقهٔ دیگر می‌فرستمش.')
     save(s)
+
+def check():
+    s = load()
+    process(s)
     output('has_jobs', 'true' if s['jobs'] else 'false')
     print('offset', s['offset'], 'jobs', len(s['jobs']))
 
@@ -167,6 +170,29 @@ def render():
     s['jobs'] = left
     save(s)
 
+_installed = False
+def ensure_renderer():
+    global _installed
+    if _installed: return
+    for c in ('npm install --no-audit --no-fund', 'npx playwright install --with-deps chromium',
+              'which ffmpeg || sudo apt-get install -y ffmpeg'):
+        subprocess.check_call(c, shell=True)
+    _installed = True
+
+def serve(seconds=280):
+    """Long-poll Telegram for ~seconds, answering immediately; render jobs as soon as they are queued."""
+    end = time.time() + seconds
+    while time.time() < end:
+        s = load()
+        try:
+            process(s, timeout=min(25, max(1, int(end - time.time()))))
+        except Exception as e:
+            print('poll failed', e); time.sleep(3)
+            continue
+        if load()['jobs']:
+            ensure_renderer()
+            render()
+
 if __name__ == '__main__':
     if not TOKEN: sys.exit('BOT_TOKEN missing')
-    {'check': check, 'render': render}[sys.argv[1]]()
+    {'check': check, 'render': render, 'serve': serve}[sys.argv[1]]()
