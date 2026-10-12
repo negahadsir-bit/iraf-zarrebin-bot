@@ -13,6 +13,12 @@ jobs:
       ALLOWED_CHAT_IDS: ${{ secrets.ALLOWED_CHAT_IDS }}
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/ms-playwright
+            node_modules
+          key: renderer-${{ hashFiles('package.json') }}
       - name: Run bot (live for about 5 minutes)
         run: python3 bot.py serve
       - name: Save state

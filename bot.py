@@ -190,7 +190,10 @@ def serve(seconds=280):
             print('poll failed', e); time.sleep(3)
             continue
         if load()['jobs']:
-            ensure_renderer()
+            try:
+                ensure_renderer()
+            except Exception as e:
+                print('renderer install failed', e); time.sleep(10); continue
             render()
 
 if __name__ == '__main__':
