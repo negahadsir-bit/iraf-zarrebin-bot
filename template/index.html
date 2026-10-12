@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="fa" dir="rtl"><head><meta charset="utf-8">
+<meta name="viewport" content="width=1080">
+<title>Zarrebin overlay</title>
+<style>
+@font-face{font-family:Abar;src:url(../fonts/AbarMid-Black.ttf);}
+@font-face{font-family:Lato;src:url(../fonts/Lato-Bold.ttf);font-weight:700;}
+:root{--red:#E5043E;--ink:#2D2D2D;--white:#fff;}
+html,body{margin:0;background:#1b1b1b}
+html.alpha,html.alpha body,html.alpha #stage{background:transparent!important}
+#stage{position:relative;width:1080px;height:1920px;overflow:hidden;background:#555;font-family:Abar}
+#shade{position:absolute;left:0;top:0;width:1080px;height:1920px;opacity:0;background:url(../assets/gradient.png) 0 0/100% 100% no-repeat,url(../assets/gradient.png) 0 0/100% 100% no-repeat}
+/* headline */
+#head{position:absolute;left:110px;right:110px;top:1206px;height:300px;display:flex;align-items:flex-start;justify-content:center;
+  text-align:center;color:#fff;font-size:48.5px;line-height:79.8px;letter-spacing:-.011em;text-wrap:balance;
+  text-shadow:0 2px 14px rgba(0,0,0,.45)}
+#head .ln{display:block;white-space:nowrap}
+#head .w{display:inline-block;white-space:pre;will-change:transform,opacity}
+/* watermark */
+#wm{position:absolute;left:0;right:0;top:1434px;text-align:center;color:#fff;opacity:0;font-family:Lato;font-weight:700;
+  font-size:24.5px;letter-spacing:.74em;padding-left:.74em;direction:ltr;text-transform:uppercase}
+</style></head>
+<body>
+<div id="stage">
+  <div id="shade"></div>
+  <div id="head" dir="rtl" lang="fa"></div>
+  <div id="wm"><bdi dir="ltr">IRAFTV</bdi></div>
+</div>
+<script>
+const Q=new URLSearchParams(location.search);
+if(Q.get('alpha')==='1')document.documentElement.classList.add('alpha');
+const HEADLINE=(Q.get('h')||'تیتر خبر اینجا قرار می‌گیرد؛\nدر دو خط').replace(/\|/g,'\n');
+const LABEL=Q.get('label')||'ذره‌بین';
+const GRAD=parseFloat(Q.get('g')||'1');           // gradient strength (opacity applied on your gradient file)
+const LAND=Q.get('layout')==='land';                // landscape source: larger headline (as in the horizontal sample)
+const BASE=LAND?68:48.5, LH=LAND?114:79.8;
+const HEAD_OUT=parseFloat(Q.get('out')||'5.2');      // headline disappears here
+window.DURATION=HEAD_OUT+1;
+document.documentElement.classList.contains('alpha')||0;
+
+// build headline: lines -> words
+const head=document.getElementById('head');
+const box=document.createElement('div');box.style.width='100%';head.appendChild(box);
+HEADLINE.split('\n').forEach(line=>{
+  const ln=document.createElement('span');ln.className='ln';
+  line.trim().split(/\s+/).forEach((wd,i,arr)=>{
+    const s=document.createElement('span');s.className='w';s.textContent=wd+(i<arr.length-1?' ':'');ln.appendChild(s);});
+  box.appendChild(ln);
+});
+
+// never more than two lines: merge/balance extra lines, then shrink the font if a line is too wide
+function fit(){
+  const lines=[...box.querySelectorAll('.ln')];
+  if(lines.length>2){
+    const all=lines.flatMap(l=>[...l.querySelectorAll('.w')]);
+    const total=all.reduce((n,w)=>n+w.textContent.length,0);let acc=0,cut=1;
+    all.forEach((w,i)=>{acc+=w.textContent.length;if(acc<=total/2)cut=i+1;});
+    lines.forEach(l=>l.remove());
+    [all.slice(0,cut),all.slice(cut)].forEach(ws=>{const ln=document.createElement('span');ln.className='ln';ws.forEach(w=>ln.appendChild(w));box.appendChild(ln);});
+  }
+  const MAX=860;let size=BASE;
+  for(let i=0;i<30;i++){
+    head.style.fontSize=size+'px';head.style.lineHeight=(size*LH/BASE)+'px';
+    const w=Math.max(...[...box.querySelectorAll('.ln')].map(l=>l.scrollWidth));
+    if(w<=MAX||size<=34)break;size-=1.5;
+  }
+  head.style.top=(1246-parseFloat(head.style.lineHeight)/2)+'px';
+  const widest=Math.max(...[...box.querySelectorAll('.ln')].map(l=>l.scrollWidth));
+  window.__fit={size,base:BASE,widest,max:MAX,ok:size>=BASE-0.01&&widest<=MAX};
+}
+
+function bez(x1,y1,x2,y2){return t=>{if(t<=0)return 0;if(t>=1)return 1;let lo=0,hi=1,u=t;
+  for(let i=0;i<30;i++){u=(lo+hi)/2;const x=3*(1-u)*(1-u)*u*x1+3*(1-u)*u*u*x2+u*u*u;x<t?lo=u:hi=u;}
+  return 3*(1-u)*(1-u)*u*y1+3*(1-u)*u*u*y2+u*u*u;};}
+const OUT=bez(.16,1,.3,1),IN=bez(.7,0,.84,0),IO=bez(.65,0,.35,1);
+const clamp=(v,a=0,b=1)=>Math.max(a,Math.min(b,v));
+const prog=(t,s,d)=>clamp((t-s)/d);
+if(Q.get('shade')==='0')document.getElementById('shade').style.display='none';
+const wm=document.getElementById("wm"),shade=document.getElementById("shade");
+const words=[...document.querySelectorAll('#head .w')];
+
+window.seek=function(t){
+  // headline: words from the right, exit together
+  const hi=OUT(prog(t,0,.5));
+  words.forEach((el,i)=>{const k=OUT(prog(t,.05+i*.07,.55));
+    const out=IN(prog(t,HEAD_OUT,.35));
+    el.style.opacity=(k>0?Math.min(1,k*3):0)*(1-out);
+    el.style.transform=`translateY(${(1-k)*34+out*46}px)`;});
+  const se=IN(prog(t,HEAD_OUT,.4));
+  shade.style.opacity=GRAD*OUT(prog(t,0,.6))*(1-se);
+  shade.style.transform=`translateY(${(1-OUT(prog(t,0,.6)))*160+se*160}px)`;
+  wm.style.opacity=.38*OUT(prog(t,.4,.8));
+};
+window.ready=document.fonts.ready.then(()=>{fit();window.seek(0);});
+window.seek(0);
+</script></body></html>

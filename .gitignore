@@ -1,0 +1,7 @@
+node_modules/
+work/
+*.mp4
+syn_*.mp4
+*.png
+!assets/*.png
+__pycache__/

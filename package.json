@@ -1,0 +1,1 @@
+{ "name": "iraftv-zarrebin-bot", "private": true, "type": "module", "dependencies": { "playwright": "1.49.1" } }
