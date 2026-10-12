@@ -31,7 +31,7 @@ const Q=new URLSearchParams(location.search);
 if(Q.get('alpha')==='1')document.documentElement.classList.add('alpha');
 const HEADLINE=(Q.get('h')||'تیتر خبر اینجا قرار می‌گیرد؛\nدر دو خط').replace(/\|/g,'\n');
 const LABEL=Q.get('label')||'ذره‌بین';
-const GRAD=parseFloat(Q.get('g')||'1');           // gradient strength (opacity applied on your gradient file)
+const GRAD=parseFloat(Q.get('g')||'0.9');           // gradient strength (opacity applied on your gradient file)
 const LAND=Q.get('layout')==='land';                // landscape source: larger headline (as in the horizontal sample)
 const BASE=LAND?68:48.5, LH=LAND?114:79.8;
 const HEAD_OUT=parseFloat(Q.get('out')||'5.2');      // headline disappears here
@@ -72,6 +72,7 @@ function fit(){
 function bez(x1,y1,x2,y2){return t=>{if(t<=0)return 0;if(t>=1)return 1;let lo=0,hi=1,u=t;
   for(let i=0;i<30;i++){u=(lo+hi)/2;const x=3*(1-u)*(1-u)*u*x1+3*(1-u)*u*u*x2+u*u*u;x<t?lo=u:hi=u;}
   return 3*(1-u)*(1-u)*u*y1+3*(1-u)*u*u*y2+u*u*u;};}
+const SOFT=bez(.42,0,.58,1);
 const OUT=bez(.16,1,.3,1),IN=bez(.7,0,.84,0),IO=bez(.65,0,.35,1);
 const clamp=(v,a=0,b=1)=>Math.max(a,Math.min(b,v));
 const prog=(t,s,d)=>clamp((t-s)/d);
@@ -83,10 +84,10 @@ window.seek=function(t){
   // headline: words from the right, exit together
   const hi=OUT(prog(t,0,.5));
   words.forEach((el,i)=>{const k=OUT(prog(t,.05+i*.07,.55));
-    const out=IN(prog(t,HEAD_OUT,.35));
+    const out=SOFT(prog(t,HEAD_OUT,.7));
     el.style.opacity=(k>0?Math.min(1,k*3):0)*(1-out);
     el.style.transform=`translateY(${(1-k)*34+out*46}px)`;});
-  const se=IN(prog(t,HEAD_OUT,.4));
+  const se=SOFT(prog(t,HEAD_OUT,.75));
   shade.style.opacity=GRAD*OUT(prog(t,0,.6))*(1-se);
   shade.style.transform=`translateY(${(1-OUT(prog(t,0,.6)))*160+se*160}px)`;
   wm.style.opacity=.38*OUT(prog(t,.4,.8));
