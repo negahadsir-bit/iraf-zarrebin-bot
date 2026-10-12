@@ -40,11 +40,16 @@ rot = abs(int((pr.get('side_data_list') or [{}])[0].get('rotation', 0))) % 180
 if rot == 90: VW, VH = VH, VW
 LAND = (FORCE == 'land') if FORCE else (VW > VH * 1.05)
 if LAND:
-    # horizontal source: dim greyscale copy fills the story frame, the real picture sits in the middle at full colour
-    bgchain = ("[0:v]split=2[b0][f0];"
-               "[b0]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,gblur=sigma=6,hflip,eq=saturation=0:brightness=-0.10,lutyuv=y=val*0.6,setsar=1,fps=30,format=yuv420p[bgd];"
-               "[f0]scale=1080:710:force_original_aspect_ratio=increase:flags=lanczos,crop=1080:710,setsar=1,fps=30,format=yuv420p[fg];"
-               "[bgd][fg]overlay=0:540:shortest=0[bg]")
+    # horizontal source: three stacked panels, all playing the same video in sync.
+    #   top (0-520) and bottom (1230-1920): heavily blurred, mirrored, exposure-shifted copies
+    #   middle (520-1230, 1080x710): the real picture in full colour
+    BL = "gblur=sigma=22,hflip,eq=saturation=0.55:brightness=-0.06,lutyuv=y=val*0.72,setsar=1,fps=30,format=yuv420p"
+    bgchain = ("[0:v]split=3[s0][s1][s2];"
+               "[s0]scale=1080:520:force_original_aspect_ratio=increase,crop=1080:520," + BL + "[top];"
+               "[s1]scale=1080:710:force_original_aspect_ratio=increase:flags=lanczos,crop=1080:710,setsar=1,fps=30,format=yuv420p[mid];"
+               "[s2]scale=1080:690:force_original_aspect_ratio=increase,crop=1080:690," + BL + "[bot];"
+               "color=c=black:s=1080x1920:r=30,format=yuv420p[base];"
+               "[base][top]overlay=0:0:shortest=1[t1];[t1][mid]overlay=0:520[t2];[t2][bot]overlay=0:1230[bg]")
 else:
     bgchain = "[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1,fps=30,format=yuv420p[bg]"
 fc += (";" + bgchain +
