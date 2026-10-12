@@ -33,7 +33,8 @@ const HEADLINE=(Q.get('h')||'تیتر خبر اینجا قرار می‌گیرد
 const LABEL=Q.get('label')||'ذره‌بین';
 const GRAD=parseFloat(Q.get('g')||'0.9');           // gradient strength (opacity applied on your gradient file)
 const LAND=Q.get('layout')==='land';                // landscape source: larger headline (as in the horizontal sample)
-const BASE=LAND?68:48.5, LH=LAND?114:79.8;
+const BASE=48.5, LH=79.8;                       // same size and safe zone in both layouts
+const HC=LAND?1286:1246;                         // landscape: headline sits a little lower, on the dark area below the video band
 const HEAD_OUT=parseFloat(Q.get('out')||'5.2');      // headline disappears here
 window.DURATION=HEAD_OUT+1;
 document.documentElement.classList.contains('alpha')||0;
@@ -64,7 +65,8 @@ function fit(){
     const w=Math.max(...[...box.querySelectorAll('.ln')].map(l=>l.scrollWidth));
     if(w<=MAX||size<=34)break;size-=1.5;
   }
-  head.style.top=(1246-parseFloat(head.style.lineHeight)/2)+'px';
+  head.style.top=(HC-parseFloat(head.style.lineHeight)/2)+'px';
+  if(LAND)document.getElementById('wm').style.top='1464px';
   const widest=Math.max(...[...box.querySelectorAll('.ln')].map(l=>l.scrollWidth));
   window.__fit={size,base:BASE,widest,max:MAX,ok:size>=BASE-0.01&&widest<=MAX};
 }

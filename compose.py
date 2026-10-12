@@ -42,9 +42,9 @@ LAND = (FORCE == 'land') if FORCE else (VW > VH * 1.05)
 if LAND:
     # horizontal source: dim greyscale copy fills the story frame, the real picture sits in the middle at full colour
     bgchain = ("[0:v]split=2[b0][f0];"
-               "[b0]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,gblur=sigma=6,vflip,eq=saturation=0:brightness=-0.10,lutyuv=y=val*0.6,setsar=1,fps=30,format=yuv420p[bgd];"
-               "[f0]scale=1080:-2:flags=lanczos,setsar=1,fps=30,format=yuv420p[fg];"
-               "[bgd][fg]overlay=0:(H-h)/2:shortest=0[bg]")
+               "[b0]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,gblur=sigma=6,hflip,eq=saturation=0:brightness=-0.10,lutyuv=y=val*0.6,setsar=1,fps=30,format=yuv420p[bgd];"
+               "[f0]scale=1080:710:force_original_aspect_ratio=increase:flags=lanczos,crop=1080:710,setsar=1,fps=30,format=yuv420p[fg];"
+               "[bgd][fg]overlay=0:540:shortest=0[bg]")
 else:
     bgchain = "[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1,fps=30,format=yuv420p[bg]"
 fc += (";" + bgchain +
