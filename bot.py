@@ -11,11 +11,14 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 STATE = os.path.join(HERE, 'state.json')
 TOKEN = os.environ.get('BOT_TOKEN', '')
 ALLOWED = {x.strip() for x in os.environ.get('ALLOWED_CHAT_IDS', '').split(',') if x.strip()}
-API = f'https://api.telegram.org/bot{TOKEN}'
+# With TELEGRAM_API_URL set (a local Bot API server started by the workflow) files may be up to 2 GB instead of 20 MB.
+BASE = os.environ.get('TELEGRAM_API_URL', '').rstrip('/')
+DATA_DIR = os.environ.get('TELEGRAM_DATA', '')
+API = f"{BASE or 'https://api.telegram.org'}/bot{TOKEN}"
 FILE_API = f'https://api.telegram.org/file/bot{TOKEN}'
 MAX_HEADLINE = 72                # characters; longer headlines would not fit in two lines
-MAX_DL = 20 * 1024 * 1024          # Telegram bot download limit
-MAX_UP = 50 * 1024 * 1024          # Telegram bot upload limit
+MAX_DL = (2000 if BASE else 20) * 1024 * 1024   # Telegram bot download limit (cloud 20 MB, local server 2 GB)
+MAX_UP = (2000 if BASE else 50) * 1024 * 1024   # Telegram bot upload limit (cloud 50 MB, local server 2 GB)
 
 def call(method, data=None, files=None, timeout=60):
     if files:
@@ -77,7 +80,7 @@ def process(s, timeout=0):
         text = (m.get('text') or '').strip()
         if vid:
             if vid.get('file_size', 0) > MAX_DL:
-                say(chat, 'حجم ویدیو بیشتر از ۲۰ مگابایت است و تلگرام اجازهٔ دریافتش را به ربات نمی‌دهد. نسخهٔ کم‌حجم‌تر بفرست.')
+                say(chat, f'حجم ویدیو بیشتر از {MAX_DL // 1048576} مگابایت است و تلگرام اجازهٔ دریافتش را به ربات نمی‌دهد. نسخهٔ کم‌حجم‌تر بفرست.')
                 continue
             s['pending'][chat] = {'file_id': vid['file_id'], 'at': time.time(), 'step': 'layout'}
             ask_layout(chat)
@@ -114,7 +117,12 @@ def check():
 def download(file_id, dest):
     info = call('getFile', {'file_id': file_id})['result']
     if info.get('file_size', 0) > MAX_DL: raise RuntimeError('file too large')
-    with urllib.request.urlopen(f"{FILE_API}/{info['file_path']}", timeout=120) as r, open(dest, 'wb') as f:
+    fp = info['file_path']
+    if BASE and os.path.isabs(fp):  # local server hands out absolute paths inside its data directory
+        local = os.path.join(DATA_DIR, os.path.relpath(fp, '/var/lib/telegram-bot-api')) if DATA_DIR else fp
+        shutil.copyfile(local, dest)
+        return
+    with urllib.request.urlopen(f"{FILE_API}/{fp}", timeout=600) as r, open(dest, 'wb') as f:
         shutil.copyfileobj(r, f)
 
 def headline_seconds(length):
@@ -146,7 +154,7 @@ def render_job(job):
         if p.returncode: raise RuntimeError('overlay render failed')
         subprocess.check_call([sys.executable, os.path.join(HERE, 'compose.py'), src, work, out, str(round(t_out + 0.95, 2)), layout])
         if os.path.getsize(out) > MAX_UP:
-            say(job['chat'], 'ویدیوی نهایی از ۵۰ مگابایت بیشتر شد و تلگرام اجازهٔ ارسالش را نمی‌دهد. ویدیوی کوتاه‌تری بفرست.')
+            say(job['chat'], f'ویدیوی نهایی از {MAX_UP // 1048576} مگابایت بیشتر شد و تلگرام اجازهٔ ارسالش را نمی‌دهد. ویدیوی کوتاه‌تری بفرست.')
             return
         call('sendVideo', {'chat_id': job['chat'], 'supports_streaming': 'true', 'width': 1080, 'height': 1920},
              {'video': ('iraftv-zarrebin.mp4', open(out, 'rb').read(), 'video/mp4')}, timeout=300)
