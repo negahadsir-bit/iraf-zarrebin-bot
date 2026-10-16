@@ -57,10 +57,15 @@ fc += (";" + bgchain +
        f";[a][3:v]overlay=0:0:enable='gte(t,{ANIM_T})':shortest=0[a2]"
        ";[a2]null[b]"
        f";[b][badge]overlay={BX}:{BY}:eof_action=pass,format=yuv420p[v]")
-cmd = ['ffmpeg', '-y', '-loglevel', 'error', '-i', IN, '-i', BADGE, '-i', os.path.join(W, 'overlay.mov'), '-loop', '1', '-i', os.path.join(W, 'static.png'),
+cmd = ['ffmpeg', '-y', '-loglevel', 'error', '-progress', 'pipe:1', '-nostats', '-i', IN, '-i', BADGE, '-i', os.path.join(W, 'overlay.mov'), '-loop', '1', '-i', os.path.join(W, 'static.png'),
        '-filter_complex', fc, '-map', '[v]', '-map', '0:a?', '-t', f'{L:.3f}',
        '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '18', '-pix_fmt', 'yuv420p',
        '-color_primaries', 'bt709', '-color_trc', 'bt709', '-colorspace', 'bt709',
        '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', OUT]
-subprocess.check_call(cmd)
+p = subprocess.Popen(cmd, stdout=subprocess.PIPE, text=True)
+for line in p.stdout:  # the bot shows this as a progress bar
+    if line.startswith('out_time_us='):
+        try: print('PROGRESS', min(1.0, int(line.split('=')[1]) / 1e6 / L), flush=True)
+        except ValueError: pass
+if p.wait(): raise subprocess.CalledProcessError(p.returncode, 'ffmpeg')
 print('ok', OUT, f'{L:.1f}s')

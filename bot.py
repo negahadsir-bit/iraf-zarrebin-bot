@@ -37,8 +37,40 @@ def call(method, data=None, files=None, timeout=60):
 
 def ask_layout(chat):
     kb = {'keyboard': [[{'text': 'عمودی'}, {'text': 'افقی'}]], 'resize_keyboard': True, 'one_time_keyboard': True}
-    try: call('sendMessage', {'chat_id': chat, 'text': 'ویدیو دریافت شد. این ویدیو عمودی است یا افقی؟', 'reply_markup': json.dumps(kb)})
+    try: call('sendMessage', {'chat_id': chat, 'text': '🎬 ویدیو را گرفتم.\nقالب عمودی باشد یا افقی؟', 'reply_markup': json.dumps(kb)})
     except Exception as e: print('sendMessage failed', e)
+
+BAR_LEN = 10
+_FA = str.maketrans('0123456789', '۰۱۲۳۴۵۶۷۸۹')
+
+def bar(pct):
+    """«▰▰▰▱▱▱▱▱▱▱ ۳۰٪» progress line."""
+    pct = max(0, min(100, int(pct)))
+    full = round(BAR_LEN * pct / 100)
+    return '▰' * full + '▱' * (BAR_LEN - full) + ' ' + f'{pct}٪'.translate(_FA)
+
+class Progress:
+    """One message that fills up while the video is made (edits are throttled; a failed edit never matters)."""
+    def __init__(self, chat, title='ساخت ویدیو'):
+        self.chat, self.title, self.mid, self.last, self.shown = chat, title, None, 0.0, ''
+        self.set(0, 'در حال شروع', force=True)
+
+    def set(self, pct, label, force=False):
+        text = f'⏳ {self.title}\n{bar(pct)}\n{label}'
+        now = time.monotonic()
+        if text == self.shown or (not force and self.mid is not None and now - self.last < 2.5): return
+        try:
+            if self.mid is None:
+                self.mid = call('sendMessage', {'chat_id': self.chat, 'text': text})['result']['message_id']
+            else:
+                call('editMessageText', {'chat_id': self.chat, 'message_id': self.mid, 'text': text})
+            self.shown, self.last = text, now
+        except Exception as e: print('progress failed', e)
+
+    def done(self):
+        if self.mid is None: return
+        try: call('editMessageText', {'chat_id': self.chat, 'message_id': self.mid, 'text': f'✅ {self.title}\n{bar(100)}\nآماده شد'})
+        except Exception as e: print('progress failed', e)
 
 def say(chat, text):
     try: call('sendMessage', {'chat_id': chat, 'text': text})
@@ -86,14 +118,14 @@ def process(s, timeout=0):
             ask_layout(chat)
         elif text.startswith('/'):
             if text.startswith('/start') or text.startswith('/help'):
-                say(chat, 'اول ویدیو را بفرست، بعد تیتر را به صورت یک پیام متنی. برای شکستن خط، تیتر را در چند خط بنویس. پاسخ ممکن است چند دقیقه طول بکشد.')
+                say(chat, 'سلام 👋\nاول ویدیو را بفرست، بعد تیتر را در یک پیام متنی بنویس. برای شکستن خط، تیتر را در چند خط بنویس.\nساخت چند دقیقه طول می‌کشد و پیشرفتش را همین‌جا می‌بینی.')
             elif text.startswith('/cancel'):
-                s['pending'].pop(chat, None); say(chat, 'لغو شد.')
+                s['pending'].pop(chat, None); say(chat, 'لغو شد. هر وقت خواستی ویدیوی تازه‌ای بفرست.')
         elif text and s['pending'].get(chat, {}).get('step') == 'layout':
             if text in ('عمودی', 'افقی'):
                 s['pending'][chat]['layout'] = 'land' if text == 'افقی' else 'portrait'
                 s['pending'][chat]['step'] = 'headline'
-                try: call('sendMessage', {'chat_id': chat, 'text': 'حالا تیتر را بفرست.', 'reply_markup': json.dumps({'remove_keyboard': True})})
+                try: call('sendMessage', {'chat_id': chat, 'text': '✍️ حالا تیتر را بنویس.', 'reply_markup': json.dumps({'remove_keyboard': True})})
                 except Exception as e: print('sendMessage failed', e)
             else:
                 ask_layout(chat)
@@ -102,10 +134,10 @@ def process(s, timeout=0):
         elif text:
             p = s['pending'].pop(chat, None)
             if not p:
-                say(chat, 'اول ویدیو را بفرست.')
+                say(chat, 'اول ویدیو را بفرست، بعد تیتر را بنویس.')
             else:
                 s['jobs'].append({'chat': chat, 'file_id': p['file_id'], 'headline': text, 'layout': p.get('layout', ''), 'id': uuid.uuid4().hex[:8]})
-                say(chat, 'در صف ساخت قرار گرفت. تا چند دقیقهٔ دیگر می‌فرستمش.')
+                say(chat, '✅ تیتر ثبت شد؛ ساخت ویدیو همین الان شروع می‌شود.')
     save(s)
 
 def check():
@@ -148,19 +180,31 @@ def render_job(job):
     work = tempfile.mkdtemp(prefix='job_')
     try:
         src, out = os.path.join(work, 'in.mp4'), os.path.join(work, 'out.mp4')
+        prog = Progress(job['chat'])
+        prog.set(5, 'دریافت ویدیو', force=True)
         download(job['file_id'], src)
+        prog.set(15, 'آماده‌سازی تیتر')
         h = balance(job['headline']).replace('\n', '|')
         layout = job.get('layout') or ('land' if is_landscape(src) else 'portrait')
         t_out = headline_seconds(video_length(src))
+        prog.set(25, 'طراحی تیتر و نشان')
         p = subprocess.run(['node', os.path.join(HERE, 'render_overlay.mjs'), '--h', h, '--out', work, '--out-time', str(t_out), '--layout', layout, '--strict'], cwd=HERE)
         if p.returncode == 3: raise TooLong()
         if p.returncode: raise RuntimeError('overlay render failed')
-        subprocess.check_call([sys.executable, os.path.join(HERE, 'compose.py'), src, work, out, str(round(t_out + 0.95, 2)), layout])
+        prog.set(40, 'ساخت و ترکیب ویدیو', force=True)
+        cp = subprocess.Popen([sys.executable, os.path.join(HERE, 'compose.py'), src, work, out, str(round(t_out + 0.95, 2)), layout], stdout=subprocess.PIPE, text=True)
+        for line in cp.stdout:  # compose.py prints PROGRESS <0..1> while ffmpeg runs
+            if line.startswith('PROGRESS '):
+                try: prog.set(40 + 52 * float(line.split()[1]), 'ساخت و ترکیب ویدیو')
+                except ValueError: pass
+        if cp.wait(): raise subprocess.CalledProcessError(cp.returncode, 'compose.py')
+        prog.set(94, 'ارسال ویدیو', force=True)
         if os.path.getsize(out) > MAX_UP:
             say(job['chat'], f'ویدیوی نهایی از {MAX_UP // 1048576} مگابایت بیشتر شد و تلگرام اجازهٔ ارسالش را نمی‌دهد. ویدیوی کوتاه‌تری بفرست.')
             return
         call('sendVideo', {'chat_id': job['chat'], 'supports_streaming': 'true', 'width': 1080, 'height': 1920},
              {'video': ('iraftv-zarrebin.mp4', open(out, 'rb').read(), 'video/mp4')}, timeout=300)
+        prog.done()
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
@@ -177,7 +221,7 @@ def render():
             print('job failed', job['id'], e)
             job['tries'] = job.get('tries', 0) + 1
             if job['tries'] < 2: left.append(job)
-            else: say(job['chat'], 'ساخت این ویدیو شکست خورد. دوباره بفرست یا ویدیوی دیگری امتحان کن.')
+            else: say(job['chat'], 'ساخت این ویدیو انجام نشد. لطفاً دوباره بفرستش یا ویدیوی دیگری امتحان کن.')
     s['jobs'] = left
     save(s)
 
