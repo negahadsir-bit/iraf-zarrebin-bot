@@ -120,7 +120,10 @@ def download(file_id, dest):
     fp = info['file_path']
     if BASE and os.path.isabs(fp):  # local server hands out absolute paths inside its data directory
         local = os.path.join(DATA_DIR, os.path.relpath(fp, '/var/lib/telegram-bot-api')) if DATA_DIR else fp
-        shutil.copyfile(local, dest)
+        try:
+            shutil.copyfile(local, dest)
+        except OSError:  # owned by the server's user inside the container: copy it out through docker
+            subprocess.check_call(['docker', 'cp', f'tgapi:{fp}', dest])
         return
     with urllib.request.urlopen(f"{FILE_API}/{fp}", timeout=600) as r, open(dest, 'wb') as f:
         shutil.copyfileobj(r, f)

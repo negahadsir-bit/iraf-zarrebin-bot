@@ -26,7 +26,7 @@ jobs:
         run: |
           if [ -n "$API_ID" ] && [ -n "$API_HASH" ]; then
             mkdir -p "$RUNNER_TEMP/tgdata"
-            docker run -d --name tgapi -p 8081:8081 --user "$(id -u):$(id -g)" \
+            docker run -d --name tgapi -p 8081:8081 \
               -v "$RUNNER_TEMP/tgdata:/var/lib/telegram-bot-api" \
               -e TELEGRAM_API_ID="$API_ID" -e TELEGRAM_API_HASH="$API_HASH" -e TELEGRAM_LOCAL=1 \
               aiogram/telegram-bot-api:latest || true
@@ -38,6 +38,7 @@ jobs:
               fi
               sleep 2
             done
+            docker ps -a; docker logs tgapi 2>&1 | tail -n 20
           fi
       - name: Run bot (live for about 5 minutes)
         run: python3 bot.py serve
