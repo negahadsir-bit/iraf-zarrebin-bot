@@ -12,7 +12,7 @@ import sys
 import zlib
 from pathlib import Path
 
-from media import InputError, InputRef, fetch_input, resolve_input, to_audio
+from media import InputError, InputRef, extract_drive_id, fetch_input, resolve_input, to_audio
 
 TEMPLATES = {"gap": "گپ", "yaran": "یاران خراسانی"}
 HEAD = "🎬"
@@ -138,6 +138,73 @@ def parse(message: dict) -> dict | None:
         elif key == "ref":
             st["ref"] = val.strip()
     return st if st.get("ref") and st.get("text") else None
+
+
+_RANGE = re.compile(r"(\d+:\d{2}(?:\.\d)?)\s*[–-]\s*(\d+:\d{2}(?:\.\d)?)(?:\s*\((\d+)ث\))?")
+PENDING_TTL = 3 * 3600
+WAIT_VIDEO = ("🎞 ویدیوی همین برش را بفرست\n⏱ بازه: {a} تا {b}\n"
+              "به محض رسیدنش، مرحله‌های بعد (قالب، نام و عنوان) شروع می‌شود.")
+
+
+def _load_pending(path) -> dict:
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _save_pending(path, data: dict) -> None:
+    try:
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        Path(path).write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def handle_make(cb: dict, cfg, tg, pending_path) -> bool:
+    """«🎬 تولید ویدیو» under a clip suggestion: remember its text, ask for the cut video."""
+    if cb.get("data") != "mk":
+        return False
+    msg = cb.get("message") or {}
+    chat_id = msg.get("chat", {}).get("id")
+    if chat_id not in cfg.allowed_chat_ids:
+        return True
+    text = reply_dialogue({"reply_to_message": msg})
+    try:
+        if not text:
+            tg.answer_callback(cb["id"], "متن این برش پیدا نشد")
+            return True
+        m = _RANGE.search(msg.get("text") or "")
+        a, b, secs = (m.group(1), m.group(2), int(m.group(3) or 0)) if m else ("—", "—", 0)
+        data = _load_pending(pending_path)
+        data[str(chat_id)] = {"text": text, "secs": secs, "at": time.time()}
+        _save_pending(pending_path, data)
+        tg.answer_callback(cb["id"], "ویدیوی این برش را بفرست")
+        tg.send_message(chat_id, WAIT_VIDEO.format(a=a, b=b), reply_to=msg.get("message_id"))
+    except Exception:  # noqa: BLE001 - a stale button must never crash the bot
+        pass
+    return True
+
+
+def take_pending(pending_path, message: dict) -> str | None:
+    """The clip text waiting for this chat's next video (or Drive link); None when nothing waits.
+    A video far longer than the asked clip is not that clip (probably a whole interview)."""
+    chat_id = str(message.get("chat", {}).get("id"))
+    media = message.get("video") or message.get("document") or {}
+    is_video = "video" in message or str(media.get("mime_type", "")).startswith("video/")
+    if not (is_video or extract_drive_id(f"{message.get('text', '')} {message.get('caption', '')}")):
+        return None
+    data = _load_pending(pending_path)
+    item = data.get(chat_id)
+    if not item or time.time() - item.get("at", 0) > PENDING_TTL:
+        return None
+    secs, dur = item.get("secs", 0), media.get("duration", 0)
+    if secs and dur and dur > secs * 3 + 30:
+        return None
+    del data[chat_id]
+    _save_pending(pending_path, data)
+    return item.get("text") or None
 
 
 def start(message: dict, text: str, tg) -> None:
