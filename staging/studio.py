@@ -6,6 +6,7 @@ import base64
 import json
 import random
 import re
+import shutil
 import time
 import sys
 import zlib
@@ -254,6 +255,13 @@ def make_video(chat_id: int, st: dict, tg, align_client, select_client, workdir:
         gap_render.main(str(video), st["text"], st["name"], st["title"], out, str(workdir / "render"), rows=rows,
                         music_file=music_file, music_lufs=music_lufs, template=st["template"],
                         progress=lambda f: prog.set(50 + 42 * f, "ساخت و ترکیب ویدیو"))
+        try:  # keep the timing data of every render so a sync complaint can be checked against it
+            keep = Path(music_catalog).parent.parent / "renders"
+            keep.mkdir(parents=True, exist_ok=True)
+            safe = re.sub(r"[^0-9A-Za-z_-]", "_", st["ref"])[:40]
+            shutil.copyfile(workdir / "render" / "debug.json", keep / f"{safe}.json")
+        except OSError:
+            pass
         prog.set(94, "ارسال ویدیو", force=True)
         tg.send_video(chat_id, out, caption=f"{st['name']} — {st['title']}\n🎵 حال‌وهوا: {mood}")
         prog.done()
