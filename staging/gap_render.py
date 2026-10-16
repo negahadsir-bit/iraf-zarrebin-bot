@@ -16,7 +16,8 @@ W, H, FPS = 1080, 1920, 30
 # layout in px at 1080x1920 (measured from the sample, 720x1280 x1.5)
 SUB_Y, NAME_Y, MARK_Y = 1383, 1443, 1500
 SUB_SIZE, NAME_SIZE, MARK_SIZE = 48, 32, 24.5
-NAME_OPACITY = 0.30   # 10 points above the IRAFTV wordmark (0.20)
+NAME_OPACITY = 0.50   # guest line (the IRAFTV wordmark is 0.20)
+MAX_LINE_W = 1000  # a caption line never gets wider than this (the frame is 1080)
 BADGE_X, BADGE_Y, BADGE_W = 708, 235, 219   # visible badge box (native 310x158 inside the 399x275 mov)
 BADGE_NATIVE = (40, 57, 349, 214)
 
@@ -25,7 +26,7 @@ PAGE = """<!doctype html><meta charset=utf-8><style>
 @font-face{font-family:Name;src:url('file://%(h)s/font_name.ttf')}
 @font-face{font-family:Lato;font-weight:700;src:url('file://%(h)s/font_lato.ttf')}
 html,body{margin:0;width:1080px;height:1920px;background:transparent;overflow:hidden}
-.grad{position:absolute;left:0;top:0;width:1080px;height:1920px;opacity:.9;
+.grad{position:absolute;left:0;top:0;width:1080px;height:1920px;opacity:.7;
  background:url('file://%(h)s/gradient_zb.png') 0 0/100%% 100%% no-repeat,url('file://%(h)s/gradient_zb.png') 0 0/100%% 100%% no-repeat}
 .l{position:absolute;left:0;width:1080px;text-align:center;transform:translateY(-50%%);white-space:nowrap}
 #sub{top:%(sy)spx;font:%(ss)spx Sub;color:#fff;direction:rtl;text-shadow:0 2px 14px rgba(0,0,0,.55)}
@@ -56,50 +57,73 @@ def probe_len(path):
         ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "json", path]))["format"]["duration"])
 
 
-def _merge_singles(groups, words, max_words, max_chars):
-    """A caption is never a single word: it joins the shorter neighbour (when it fits)."""
-    def width(g):
-        return len(" ".join(words[j] for j in g))
-    g = [list(x) for x in groups]
-    i = 0
-    while i < len(g):
-        if len(g[i]) == 1 and len(g) > 1:
-            opts = []
-            if i > 0 and len(g[i - 1]) + 1 <= max_words and width(g[i - 1] + g[i]) <= max_chars:
-                opts.append((len(g[i - 1]), i - 1))
-            if i + 1 < len(g) and len(g[i + 1]) + 1 <= max_words and width(g[i] + g[i + 1]) <= max_chars:
-                opts.append((len(g[i + 1]), i + 1))
-            if opts:
-                _, j = min(opts)
-                if j < i:
-                    g[j] = g[j] + g[i]
-                else:
-                    g[i] = g[i] + g[j]
-                    j = i + 1
-                del g[j if j > i else i]
-                i = max(0, i - 1)
+_HARD_END = re.compile(r"[.\u061f?!]$")
+_SOFT_END = re.compile(r"[\u060c,\u061b:]$")
+_NOT_LAST = {"از", "به", "در", "با", "تا", "بر", "برای", "که", "و", "یا", "چون", "اگر", "اما", "ولی", "این", "آن", "یک", "هر", "همه", "مثل", "مانند"}
+_NOT_FIRST = {"را"}
+
+
+def _line_cost(words, i, j, ideal, soft_after):
+    """Cost of showing words[i:j] as one caption line: near the ideal width, ends on a natural break."""
+    text = " ".join(words[i:j])
+    cost = 1.0 + ((len(text) - ideal) / max(ideal, 1)) ** 2 * 2
+    if j - i == 1:
+        cost += 4
+    last, nxt = words[j - 1], (words[j] if j < len(words) else "")
+    if re.sub(r"[\u060c,.\u061b:\u061f?!]", "", last) in _NOT_LAST:
+        cost += 3
+    if re.sub(r"[\u060c,.\u061b:\u061f?!]", "", nxt) in _NOT_FIRST:
+        cost += 3
+    if j < len(words) and soft_after[j - 1]:
+        cost -= 0.8
+    return cost
+
+
+def _split_unit(words, soft_after, max_words, max_chars):
+    """Best way to cut one sentence/phrase into caption lines (DP): lines fit the limits, are even,
+    never leave a lone word and break at natural pauses when possible."""
+    n = len(words)
+    total = len(" ".join(words))
+    ideal = total / max(1, max(-(-n // max_words), -(-total // max_chars)))
+    INF = float("inf")
+    best, back = [INF] * (n + 1), [0] * (n + 1)
+    best[0] = 0.0
+    for j in range(1, n + 1):
+        for i in range(max(0, j - max_words), j):
+            if len(" ".join(words[i:j])) > max_chars and j - i > 1:
                 continue
-        i += 1
-    return g
+            c = best[i] + _line_cost(words, i, j, ideal, soft_after)
+            if c < best[j]:
+                best[j], back[j] = c, i
+    cuts, j = [], n
+    while j > 0:
+        cuts.append((back[j], j))
+        j = back[j]
+    return cuts[::-1]
 
 
-def group_words(words, times, max_words=4, max_chars=26):
-    groups, cur = [], []
-    for i, (w, t) in enumerate(zip(words, times)):
+def group_words(words, times, max_words=7, max_chars=40):
+    """Caption groups [(text, start, end)]. A sentence (or a phrase after a long pause) is never mixed with the
+    next one: it is cut into even lines of up to max_words / max_chars, at natural breaks."""
+    n = len(words)
+    soft_after = [bool(_SOFT_END.search(words[i])) or (i + 1 < n and times[i + 1][0] - times[i][1] > 0.25)
+                  for i in range(n)]
+    units, cur = [], []
+    for i in range(n):
         cur.append(i)
-        text = " ".join(words[j] for j in cur)
-        end_punct = bool(re.search(r"[،,.؟?!؛:]$", w))
-        gap = (times[i + 1][0] - t[1]) if i + 1 < len(words) else 9
-        if len(cur) >= max_words or len(text) >= max_chars or end_punct or gap > 0.3:
-            groups.append(cur)
+        gap = (times[i + 1][0] - times[i][1]) if i + 1 < n else 9
+        if _HARD_END.search(words[i]) or gap > 0.7:
+            units.append(cur)
             cur = []
     if cur:
-        groups.append(cur)
-    groups = _merge_singles(groups, words, max_words + 1, max_chars + 6)
+        units.append(cur)
     out = []
-    for g in groups:
-        text = re.sub(r"[،,.؛:]+", "", " ".join(words[j] for j in g)).strip()
-        out.append((text, times[g[0]][0], times[g[-1]][1]))
+    for u in units:
+        uw = [words[i] for i in u]
+        for a, b in _split_unit(uw, [soft_after[i] for i in u], max_words, max_chars):
+            idx = u[a:b]
+            text = re.sub(r"[\u060c,.\u061b:]+", "", " ".join(words[k] for k in idx)).strip()
+            out.append((text, times[idx[0]][0], times[idx[-1]][1]))
     return out
 
 
@@ -143,6 +167,10 @@ def render_layers(work, name_line, sched):
                 paths[i] = f"{work}/blank.png"
                 continue
             pg.evaluate("t=>{document.getElementById('sub').textContent=t}", text)
+            # a long line may not leave the frame: shrink only that caption until it fits
+            pg.evaluate("""([maxw, size])=>{const e=document.getElementById('sub');e.style.fontSize=size+'px';
+              const r=document.createRange();r.selectNodeContents(e);const w=r.getBoundingClientRect().width;
+              if(w>maxw)e.style.fontSize=Math.max(30,Math.floor(size*maxw/w))+'px'}""", [MAX_LINE_W, SUB_SIZE])
             paths[i] = f"{work}/cap_{i:03d}.png"
             pg.screenshot(path=paths[i], omit_background=True)
         browser.close()
@@ -230,7 +258,7 @@ def main(video, text, guest, title, out, work="/tmp/gap_work", rows=None, music_
     os.makedirs(work, exist_ok=True)
     L = probe_len(video)
     x = wt.load_audio(video, f"{work}/a.wav")
-    chunks = wt.speech_chunks(x)
+    chunks = wt.refine_chunks(x, wt.speech_chunks(x))
     anchors = []
     if rows:  # real word times (Gemini), fixed against the audio
         words = text.split()
