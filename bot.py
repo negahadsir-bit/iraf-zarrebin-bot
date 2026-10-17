@@ -5,7 +5,7 @@
   python bot.py render  -> render every queued job and send the finished video back
 Flow for the user: send a video, then send the headline as a text message.
 Env: BOT_TOKEN (required), ALLOWED_CHAT_IDS (comma separated; empty = only tells you your chat id)."""
-import json, os, sys, time, subprocess, tempfile, shutil, urllib.request, urllib.parse, uuid, re
+import urllib.error, json, os, sys, time, subprocess, tempfile, shutil, urllib.request, urllib.parse, uuid, re
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATE = os.path.join(HERE, 'state.json')
@@ -242,7 +242,15 @@ def serve(seconds=280):
         try:
             process(s, timeout=min(25, max(1, int(end - time.time()))))
         except Exception as e:
-            print('poll failed', e); time.sleep(3)
+            wait = 3
+            body = ''
+            if isinstance(e, urllib.error.HTTPError):
+                try: body = e.read().decode('utf-8', 'replace')[:300]
+                except Exception: pass
+                try: wait = max(3, min(120, int(json.loads(body).get('parameters', {}).get('retry_after', 3)) + 1))
+                except Exception: wait = 30 if e.code == 429 else 3
+            print('poll failed', e, body, 'waiting', wait, flush=True)
+            time.sleep(wait)
             continue
         if load()['jobs']:
             try:
