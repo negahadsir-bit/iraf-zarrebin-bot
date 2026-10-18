@@ -172,14 +172,39 @@ class GeminiClient:
         self._client = genai.Client(
             api_key=api_key, http_options=types.HttpOptions(timeout=180_000))
         self._models = [model] if model else models_from_env()
+        self._careful_models = None
 
-    def _ask(self, audio: Path, prompt: str) -> list[dict]:
+    def _careful(self) -> list[str]:
+        """Strongest available models first (for short, final listening), then the usual ones."""
+        if self._careful_models is None:
+            import re
+            found = []
+            try:
+                for m in self._client.models.list():
+                    name = (getattr(m, "name", "") or "").split("/")[-1]
+                    acts = getattr(m, "supported_actions", None) or []
+                    bad = ("image", "tts", "live", "audio", "embedding", "vision", "robotics", "computer")
+                    if "pro" in name and "generateContent" in acts and not any(b in name for b in bad):
+                        found.append(name)
+            except Exception as e:  # noqa: BLE001 - fall back to the usual models
+                print(f"model list failed: {type(e).__name__}", file=sys.stderr, flush=True)
+
+            def version(n):
+                nums = re.findall(r"\d+(?:\.\d+)?", n)
+                return float(nums[0]) if nums else 0.0
+            found.sort(key=version, reverse=True)
+            top = found[:2]
+            self._careful_models = top + [m for m in self._models if m not in top]
+            print(f"careful models: {self._careful_models}", file=sys.stderr, flush=True)
+        return self._careful_models
+
+    def _ask(self, audio: Path, prompt: str, careful: bool = False) -> list[dict]:
         f = self._client.files.upload(file=str(audio))
         resp = call_with_fallback(
             lambda m: self._client.models.generate_content(
                 model=m, contents=[prompt, f],
                 config={"response_mime_type": "application/json", "temperature": 0}),
-            self._models)
+            self._careful() if careful else self._models, attempts=2 if careful else 5)
         try:
             data = json.loads(resp.text)
         except (ValueError, TypeError):
@@ -188,7 +213,7 @@ class GeminiClient:
 
     def correct_text(self, audio: Path, draft: str) -> str:
         """The draft text of a short clip, corrected by listening to it again."""
-        rows = self._ask(audio, _PROMPT_CORRECT.replace("%s", draft))
+        rows = self._ask(audio, _PROMPT_CORRECT.replace("%s", draft), careful=True)
         return str(rows[0].get("text", "")) if rows else ""
 
     def align_words(self, audio: Path, text: str = "") -> list[dict]:
@@ -208,8 +233,12 @@ class GeminiClient:
         # real client uses sentence-level times only; see transcribe_sentences.
         return None
 
-    def transcribe_sentences(self, audio: Path):
-        rows = self._ask(audio, _PROMPT_SENT)
+    def transcribe_careful(self, audio: Path):
+        """Sentences of a short clip, written by the strongest available model."""
+        return self.transcribe_sentences(audio, careful=True)
+
+    def transcribe_sentences(self, audio: Path, careful: bool = False):
+        rows = self._ask(audio, _PROMPT_SENT, careful=careful)
         out = []
         for r in rows:
             try:

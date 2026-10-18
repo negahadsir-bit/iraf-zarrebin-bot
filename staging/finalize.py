@@ -7,6 +7,7 @@ from pathlib import Path
 
 from models import Clip
 from refine import _cut
+from select_clips import _done
 from retry import BusyError, QuotaError
 
 PAD = 1.5
@@ -25,6 +26,7 @@ def _prompt(sents) -> str:
         "بدون مرجع، نه «ببین/خب/مثلاً» بی‌محتوا، نه وسط یک داستان بدون مقدمه.\n"
         "- پایان باید قوی‌ترین جمله‌ی همان فکر باشد (نتیجه، پانچ یا اوج احساسی). هر چه بعد از اوج می‌آید "
         "و ضعیف‌تر یا تکراری یا اضافه است حذف شود؛ کوتاه‌تر و تأثیرگذارتر بهتر از طولانی است.\n"
+        "- آخرین جمله‌ی بازه باید کامل باشد؛ جمله‌ی نیمه‌تمام مثل «گفتند که» یا «و بعد» را پایان قرار نده.\n"
         "- مدت بازه ترجیحاً ۲۵ تا ۶۰ ثانیه و حداکثر ۷۰ ثانیه باشد.\n"
         "- جمله‌ی نامفهوم، خراب یا بی‌معنی (مثلاً ترکیب کلمه‌های بی‌ربط) داخل بازه نباشد.\n"
         "- اگر هیچ بازه‌ی معنادار، مستقل و کامل در این متن نیست، ok را false بده.\n"
@@ -37,15 +39,20 @@ def finalize_one(clip: Clip, audio: Path, total: float, tclient, sclient, workdi
     or None when the judge finds no meaningful, self-contained stretch in it."""
     w0, w1 = max(0.0, clip.start - PAD), min(total, clip.end + PAD)
     dest = workdir / f"fin_{clip.rank}.mp3"
-    heard = tclient.transcribe_sentences(_cut(audio, w0, w1 - w0, dest)) or []
+    listen = getattr(tclient, "transcribe_careful", None) or tclient.transcribe_sentences
+    heard = listen(_cut(audio, w0, w1 - w0, dest)) or []
+    if not heard:  # nothing heard (a failed listen or no speech here): keep the clip, flagged
+        return replace(clip, shaky=True)
     lo, hi = clip.start - w0, clip.end - w0
     sents = []
     for s in heard:
         length = max(s.end - s.start, 0.01)
         if (min(s.end, hi) - max(s.start, lo)) / length >= 0.5:
             sents.append(s)
-    if len(sents) < MIN_SENTENCES:
-        return clip
+    if len(sents) < MIN_SENTENCES:  # a stretch of music or silence, not an interview answer
+        print(f"finalize clip {clip.rank}: only {len(sents)} spoken sentence(s), dropped",
+              file=sys.stderr, flush=True)
+        return None
     rows = sclient.generate_json(_prompt(sents))
     row = rows[0] if isinstance(rows, list) and rows and isinstance(rows[0], dict) else None
     if row is None:
@@ -60,6 +67,9 @@ def finalize_one(clip: Clip, audio: Path, total: float, tclient, sclient, workdi
         return clip
     if not (0 <= a <= b < len(sents)):
         return clip
+    if sum(_done(s) for s in sents) * 2 >= len(sents):  # punctuated transcript: end on a finished sentence
+        while b > a and not _done(sents[b]):
+            b -= 1
     start = max(0.0, w0 + sents[a].start - LEAD)
     end = min(total, w0 + sents[b].end + TAIL)
     if not MIN_LEN <= end - start <= MAX_LEN:

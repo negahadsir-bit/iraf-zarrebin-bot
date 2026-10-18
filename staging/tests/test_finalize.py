@@ -73,9 +73,38 @@ class FinalizeTests(unittest.TestCase):
         self.assertEqual(self.one(Sc([{"from": "x", "to": 1, "ok": True}])), CLIP)
         self.assertEqual(self.one(Sc([])), CLIP)
 
-    def test_too_little_speech_keeps_clip(self):
-        out = self.one(Sc([{"from": 0, "to": 1, "ok": True}]), tc=Tc(HEARD[:2]))
-        self.assertEqual(out, CLIP)
+    def test_almost_no_speech_drops_clip(self):
+        self.assertIsNone(self.one(Sc([{"from": 0, "to": 1, "ok": True}]), tc=Tc(HEARD[:2])))
+
+    def test_nothing_heard_keeps_clip_flagged(self):
+        out = self.one(Sc([]), tc=Tc([]))
+        self.assertTrue(out.shaky)
+        self.assertEqual((out.start, out.end), (CLIP.start, CLIP.end))
+
+    def test_unfinished_last_sentence_is_stepped_back(self):
+        heard = [Sentence("ببین مثلا.", 0.0, 1.0), Sentence("شروع مستقل است.", 2.0, 12.0),
+                 Sentence("ادامه‌ی ماجرا.", 12.0, 30.0), Sentence("اوج احساسی همین است.", 30.0, 52.0),
+                 Sentence("گفتند که", 52.0, 60.0)]
+        out = self.one(Sc([{"from": 0, "to": 3, "ok": True}]), tc=Tc(heard))
+        self.assertEqual(out.text.split()[-1], "است.")
+        out = self.one(Sc([{"from": 0, "to": 3, "ok": True}]), tc=Tc(heard[:4] + [Sentence("گفتند که", 52.0, 60.0)]))
+        self.assertAlmostEqual(out.end, 98.5 + 52.0 + finalize.TAIL)
+
+    def test_careful_listening_is_preferred_when_available(self):
+        class Careful(Tc):
+            def __init__(self):
+                super().__init__()
+                self.used = False
+
+            def transcribe_careful(self, path):
+                self.used = True
+                return HEARD
+
+            def transcribe_sentences(self, path):
+                raise AssertionError("should use the careful listener")
+        tc = Careful()
+        self.one(Sc([{"from": 0, "to": 2, "ok": True}]), tc=tc)
+        self.assertTrue(tc.used)
 
 
 class FinalizeClipsTests(unittest.TestCase):
