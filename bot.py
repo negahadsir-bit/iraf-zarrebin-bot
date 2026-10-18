@@ -160,7 +160,7 @@ def process(s, timeout=0):
                 say(chat, f'تیتر بلند است ({len(text)} حرف). حداکثر {MAX_HEADLINE} حرف؛ کوتاه‌ترش کن و دوباره بفرست.')
             else:
                 rid = s['pending'].pop(chat)['review']
-                s['jobs'].append({'chat': chat, 'url': rv['url'], 'video_url': rv.get('video_url', ''), 'headline': text, 'layout': rv.get('layout', ''), 'id': rid, 'review': True})
+                s['jobs'].append({'chat': chat, 'url': rv['url'], 'video_url': rv.get('video_url', ''), 'headline': text, 'caption': rv.get('caption', ''), 'layout': rv.get('layout', ''), 'id': rid, 'review': True})
                 say(chat, '✅ تیتر جدید ثبت شد؛ ساخت دوباره شروع می‌شود.')
         elif text and s['pending'].get(chat, {}).get('step') == 'layout':
             if text in ('عمودی', 'افقی'):
@@ -217,30 +217,39 @@ def is_landscape(path):
 
 DEEPSEEK_KEY = os.environ.get('DEEPSEEK_API_KEY', '')
 
-def headline_from(text, source_lang=''):
-    """Translate a news caption to Persian and cut it to a headline of at most MAX_HEADLINE characters (DeepSeek, normal non-reasoning mode).
-    Returns '' when no key is set or the call fails, so callers can fall back to asking the user."""
-    if not DEEPSEEK_KEY or not text.strip(): return ''
-    sysmsg = (f'تو سردبیر یک شبکهٔ خبری فارسی‌زبان هستی. متن خبر را به فارسی روان و رسمی ترجمه کن و به یک تیتر کوتاه خبری تبدیل کن. '
-              f'تیتر باید حداکثر {MAX_HEADLINE - 6} نویسه باشد، فقط شامل مهم‌ترین خبر، بدون هشتگ، ایموجی، نقل‌قول اضافی و نقطهٔ پایانی. '
-              'فقط خود تیتر را بنویس، بدون توضیح.')
-    body = json.dumps({'model': 'deepseek-chat', 'temperature': 0.3, 'max_tokens': 120,
-                       'messages': [{'role': 'system', 'content': sysmsg},
-                                    {'role': 'user', 'content': text.strip()[:3000]}]}).encode()
-    req = urllib.request.Request('https://api.deepseek.com/chat/completions', body,
-                                 {'Content-Type': 'application/json', 'Authorization': f'Bearer {DEEPSEEK_KEY}'})
-    for attempt in range(2):
+STYLE = """تو سردبیر یک شبکهٔ خبری فارسی‌زبان هستی. متن خبر (هر زبانی) را بگیر و دو چیز بنویس: «تیتر» و «کپشن» فارسی.
+
+قواعد تیتر:
+- جملهٔ اسمی و خبری، به شکل «موضوع اصلی؛ جزئیات یا پیامد» (با نقطه‌ویرگول فارسی ؛) یا یک جملهٔ کوتاه، بدون نقطهٔ پایانی.
+- حدود ۵۵ تا ۶۸ نویسه، هرگز بیشتر از ۷۰ نویسه.
+- ساختار مورد پسند: «اتهام نظامیان پاکستان به سرقت طلا از خانه‌ها در خیبر»، «پانزدهمین روز اعتراضات در پاکستان؛ افزایش انتقادها از عاصم منیر»، «آتش‌سوزی گسترده در کالیفرنیا؛ تخلیهٔ هزاران نفر و خسارت به خانه‌ها».
+- بدون هشتگ، ایموجی، نقل‌قول، علامت تعجب و عبارت‌هایی مثل «فوری». نام‌ها و جاها را به شکل رایج فارسی بنویس.
+
+قواعد کپشن:
+- فارسی روان، رسمی و بی‌طرف؛ ترجمهٔ وفادار و خلاصه‌شدهٔ خود خبر، بدون اضافه‌کردن اطلاعات یا نظر.
+- اگر خبر چند واقعهٔ جدا دارد، سه خط کوتاه و هر خط با «🔷 » شروع شود. وگرنه یک پاراگراف دو تا چهار جمله‌ای.
+- بدون هشتگ، منبع و تبلیغ؛ حداکثر ۶۰۰ نویسه.
+
+خروجی فقط یک JSON با کلیدهای headline و caption."""
+
+def news_from(text):
+    """Caption of a news post in any language -> (Persian headline <= MAX_HEADLINE chars, Persian caption), via DeepSeek in normal (non-reasoning) mode.
+    Returns ('', '') when there is no key or the call fails, so callers can fall back."""
+    if not DEEPSEEK_KEY or not text.strip(): return '', ''
+    msgs = [{'role': 'system', 'content': STYLE}, {'role': 'user', 'content': text.strip()[:3000]}]
+    for attempt in range(3):
         try:
-            with urllib.request.urlopen(req, timeout=60) as r:
-                out = json.load(r)['choices'][0]['message']['content'].strip().strip('"«»').rstrip('.')
-            out = re.sub(r'\s+', ' ', out)
-            if len(out) <= MAX_HEADLINE: return out
-            body2 = json.loads(body); body2['messages'].append({'role': 'assistant', 'content': out})
-            body2['messages'].append({'role': 'user', 'content': f'این {len(out)} نویسه است؛ کوتاه‌ترش کن تا حداکثر {MAX_HEADLINE - 6} نویسه شود.'})
-            req = urllib.request.Request(req.full_url, json.dumps(body2).encode(), dict(req.header_items()))
+            body = json.dumps({'model': 'deepseek-chat', 'temperature': 0.3, 'max_tokens': 700, 'response_format': {'type': 'json_object'}, 'messages': msgs}).encode()
+            req = urllib.request.Request('https://api.deepseek.com/chat/completions', body, {'Content-Type': 'application/json', 'Authorization': f'Bearer {DEEPSEEK_KEY}'})
+            with urllib.request.urlopen(req, timeout=60) as r: raw = json.load(r)['choices'][0]['message']['content']
+            d = json.loads(raw)
+            h = re.sub(r'\s+', ' ', str(d.get('headline', ''))).strip().strip('"«»').rstrip('.')
+            c = str(d.get('caption', '')).strip()
+            if h and len(h) <= MAX_HEADLINE: return h, c[:900]
+            msgs += [{'role': 'assistant', 'content': raw}, {'role': 'user', 'content': f'تیتر {len(h)} نویسه است. کوتاه‌ترش کن تا حداکثر ۶۸ نویسه شود و دوباره همان JSON را بده.'}]
         except Exception as e:
             print('deepseek failed', e); time.sleep(2)
-    return ''
+    return '', ''
 
 class NoVideo(Exception): pass
 
@@ -280,7 +289,7 @@ def render_job(job):
             if not job.get('video_url'):
                 text, job['video_url'] = fetch_tweet(job['url'])
                 if not job.get('headline'):
-                    job['headline'] = headline_from(clean_caption(text))
+                    job['headline'], job['caption'] = news_from(clean_caption(text))
                     if not job['headline']:
                         job['headline'] = fallback_headline(text)
                         caption_note = '\n⚠️ ترجمهٔ خودکار انجام نشد؛ متن اصلی کوتاه شده است. با «اصلاح تیتر» درستش کن.'
@@ -309,8 +318,8 @@ def render_job(job):
             return
         extra = {}
         if job.get('url'):
-            extra = {'caption': f"تیتر پیشنهادی:\n{job['headline']}{caption_note}\n\n{job['url']}", 'reply_markup': review_keyboard(job['id'])}
-            REVIEWS[job['id']] = {'chat': job['chat'], 'url': job['url'], 'video_url': job.get('video_url', ''), 'headline': job['headline'], 'layout': layout}
+            extra = {'caption': ('' + f"تیتر پیشنهادی:\n{job['headline']}{caption_note}" + (f"\n\nکپشن:\n{job['caption']}" if job.get('caption') else '') + f"\n\n{job['url']}")[:1020], 'reply_markup': review_keyboard(job['id'])}
+            REVIEWS[job['id']] = {'chat': job['chat'], 'url': job['url'], 'video_url': job.get('video_url', ''), 'headline': job['headline'], 'caption': job.get('caption', ''), 'layout': layout}
         call('sendVideo', {'chat_id': job['chat'], 'supports_streaming': 'true', 'width': 1080, 'height': 1920, **extra},
              {'video': ('iraftv-zarrebin.mp4', open(out, 'rb').read(), 'video/mp4')}, timeout=300)
         prog.done()
@@ -328,7 +337,7 @@ def render():
         except TooLong:
             say(job['chat'], 'تیتر برای دو خط با اندازهٔ استاندارد خیلی بلند است و فونت باید ریز می‌شد. هر خط حدود ۳۶ حرف جا دارد (حدود ۷۰ حرف در کل). کوتاه‌ترش کن و دوباره بفرست؛ ویدیو نگه داشته شده است.')
             if job.get('url'):
-                REVIEWS[job['id']] = {'chat': job['chat'], 'url': job['url'], 'video_url': job.get('video_url', ''), 'headline': job.get('headline', ''), 'layout': job.get('layout', '')}
+                REVIEWS[job['id']] = {'chat': job['chat'], 'url': job['url'], 'video_url': job.get('video_url', ''), 'headline': job.get('headline', ''), 'caption': job.get('caption', ''), 'layout': job.get('layout', '')}
                 s['pending'][job['chat']] = {'step': 'edit', 'review': job['id'], 'at': time.time()}
             else:
                 s['pending'][job['chat']] = {'file_id': job['file_id'], 'at': time.time(), 'step': 'headline', 'layout': job.get('layout', '')}
