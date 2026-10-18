@@ -9,7 +9,7 @@ from refine import _cut
 from retry import QuotaError
 
 PAD = 0.3
-MIN_SIMILAR = 0.6   # below this the model rewrote the speech instead of fixing spelling
+MIN_SIMILAR = 0.5   # below this the model rewrote the speech instead of fixing spelling
 LENGTH_RANGE = (0.75, 1.3)
 
 

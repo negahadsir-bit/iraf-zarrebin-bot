@@ -14,6 +14,7 @@ from select_clips import SelectionError, select_clips
 from verify import verify_clips
 from polish import polish_edges
 from proofread import proofread_clips
+from finalize import finalize_clips
 from refine import refine_clips
 from silence import detect_silences, drop_overlaps, snap_to_silence
 from transcribe import TranscriptionError, audio_seconds, transcribe
@@ -104,6 +105,11 @@ def process(message: dict, deps: Deps, cats: tuple = ()) -> list[str]:
                                  deps.workdir)
         except Exception as e:  # noqa: BLE001
             print(f"verify skipped: {type(e).__name__}", file=sys.stderr, flush=True)
+        try:  # final editor: best self-contained stretch of each clip, nonsense dropped
+            clips = finalize_clips(clips, audio, audio_seconds(audio), deps.transcribe_client,
+                                   deps.select_client, deps.workdir)
+        except Exception as e:  # noqa: BLE001
+            print(f"finalize skipped: {type(e).__name__}", file=sys.stderr, flush=True)
         try:  # then pull edges to real pauses in the audio
             clips = snap_to_silence(clips, detect_silences(audio))
         except Exception as e:  # noqa: BLE001 - never lose clips over a refinement step
