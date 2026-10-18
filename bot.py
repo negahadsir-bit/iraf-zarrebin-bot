@@ -100,10 +100,15 @@ def output(k, v):
 
 TWEET_RE = re.compile(r'https?://(?:www\.|mobile\.)?(?:x|twitter)\.com/[^/\s]+/status/(\d+)\S*')
 
-def review_keyboard(rid, url=''):
+def flags(fix): return {x for x in (fix or '').split(',') if x}
+
+def review_keyboard(rid, url='', fix=''):
     rid = rid + (':' + TWEET_RE.search(url).group(1) if url and TWEET_RE.search(url) else '')
+    on = flags(fix)
+    mark = lambda k, t: ('✔️ ' if k in on else '') + t
     return json.dumps({'inline_keyboard': [[{'text': '✅ تأیید', 'callback_data': f'ok:{rid}'}, {'text': '✏️ اصلاح تیتر', 'callback_data': f'ed:{rid}'}],
-                                           [{'text': '🔎 زوم ۱۵٪', 'callback_data': f'zm:{rid}'}, {'text': '🧽 حذف لوگو', 'callback_data': f'dl:{rid}'}],
+                                           [{'text': mark('zoom', '🔎 زوم ۱۵٪'), 'callback_data': f'zm:{rid}'}, {'text': mark('delogo', '🧽 حذف لوگو'), 'callback_data': f'dl:{rid}'}],
+                                           [{'text': mark('music', '🎵 موزیک خبری'), 'callback_data': f'mu:{rid}'}],
                                            [{'text': '❌ رد', 'callback_data': f'no:{rid}'}]]})
 
 def recover_review(msg, tid):
@@ -131,12 +136,14 @@ def on_button(s, cq):
         mark('✅ تأیید شد'); s['reviews'].pop(rid, None)
     elif act == 'no':
         mark('❌ رد شد'); s['reviews'].pop(rid, None)
-    elif act in ('zm', 'dl'):
+    elif act in ('zm', 'dl', 'mu'):
         if not rv: say(chat, 'این مورد دیگر در دسترس نیست.'); return
-        fix = 'zoom' if act == 'zm' else 'delogo'
-        if rv.get('fix') == fix: say(chat, 'این تغییر همین الان روی ویدیو اعمال شده است.'); return
+        key = {'zm': 'zoom', 'dl': 'delogo', 'mu': 'music'}[act]
+        fl = flags(rv.get('fix')) ^ {key}  # a second press switches it off again
+        fix = ','.join(sorted(fl))
         s['jobs'].append({'chat': chat, 'url': rv['url'], 'video_url': rv.get('video_url', ''), 'headline': rv['headline'], 'caption': rv.get('caption', ''), 'layout': rv.get('layout', ''), 'fix': fix, 'id': rid, 'review': True})
-        say(chat, '🔎 ویدیو را با زوم دوباره می‌سازم.' if fix == 'zoom' else '🧽 لوگوها را پیدا و پاک می‌کنم و دوباره می‌سازم.')
+        rv['fix'] = fix
+        say(chat, {'zoom': '🔎 زوم', 'delogo': '🧽 حذف لوگو', 'music': '🎵 موزیک'}[key] + (' اعمال می‌شود؛ ویدیو دوباره ساخته می‌شود.' if key in fl else ' برداشته می‌شود؛ ویدیو دوباره ساخته می‌شود.'))
     elif act == 'ed':
         if not rv: say(chat, 'این مورد دیگر در دسترس نیست.'); return
         s['pending'][chat] = {'step': 'edit', 'review': rid, 'at': time.time()}
@@ -321,6 +328,22 @@ def clean_source(src, mode, work):
     subprocess.run(['ffmpeg', '-v', 'error', '-y', '-i', src, '-vf', vf, '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '18', '-c:a', 'copy', out], check=True)
     return out
 
+def add_music(video, work):
+    """Mix the rhythmic news bed under the video: looped, quiet, ducked while someone speaks, faded out at the end."""
+    dur = video_length(video)
+    music = os.path.join(HERE, 'assets', 'news_bed.mp3')
+    out = os.path.join(work, 'with_music.mp4')
+    has_audio = bool(subprocess.check_output(['ffprobe', '-v', 'error', '-select_streams', 'a', '-show_entries', 'stream=index', '-of', 'csv=p=0', video]).strip())
+    fade = f'afade=t=in:d=1,afade=t=out:st={max(0, dur - 1.5):.2f}:d=1.5'
+    if has_audio:
+        fc = (f'[1:a]volume=0.5,{fade}[m];[0:a]asplit=2[s][o];[m][s]sidechaincompress=threshold=0.03:ratio=8:attack=25:release=500[d];'
+              '[o][d]amix=inputs=2:duration=first:normalize=0[a]')
+    else:
+        fc = f'[1:a]volume=0.8,{fade}[a]'
+    subprocess.run(['ffmpeg', '-v', 'error', '-y', '-i', video, '-stream_loop', '-1', '-i', music, '-filter_complex', fc, '-map', '0:v', '-map', '[a]',
+                    '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k', '-t', f'{dur:.2f}', out], check=True)
+    return out
+
 class NoVideo(Exception): pass
 
 def fetch_tweet(url):
@@ -367,9 +390,11 @@ def render_job(job):
             with urllib.request.urlopen(req, timeout=300) as r, open(src, 'wb') as f: shutil.copyfileobj(r, f)
         else:
             download(job['file_id'], src)
-        if job.get('fix'):
+        fl = flags(job.get('fix'))
+        if fl & {'zoom', 'delogo'}:
             prog.set(10, 'اصلاح ویدیو (زوم یا حذف لوگو)', force=True)
-            src = clean_source(src, job['fix'], work)
+            for mode in ('delogo', 'zoom'):  # erase overlays first, then zoom
+                if mode in fl: src = clean_source(src, mode, work)
         prog.set(15, 'آماده‌سازی تیتر')
         h = balance(job['headline']).replace('\n', '|')
         layout = job.get('layout') or ('land' if is_landscape(src) else 'portrait')
@@ -385,13 +410,16 @@ def render_job(job):
                 try: prog.set(40 + 52 * float(line.split()[1]), 'ساخت و ترکیب ویدیو')
                 except ValueError: pass
         if cp.wait(): raise subprocess.CalledProcessError(cp.returncode, 'compose.py')
+        if 'music' in fl:
+            prog.set(92, 'افزودن موزیک', force=True)
+            out = add_music(out, work)
         prog.set(94, 'ارسال ویدیو', force=True)
         if os.path.getsize(out) > MAX_UP:
             say(job['chat'], f'ویدیوی نهایی از {MAX_UP // 1048576} مگابایت بیشتر شد و تلگرام اجازهٔ ارسالش را نمی‌دهد. ویدیوی کوتاه‌تری بفرست.')
             return
         extra = {}
         if job.get('url'):
-            extra = {'caption': ('' + f"{job['headline']}{caption_note}" + (f"\n\n{job['caption']}" if job.get('caption') else '') )[:1020], 'reply_markup': review_keyboard(job['id'], job['url'])}
+            extra = {'caption': ('' + f"{job['headline']}{caption_note}" + (f"\n\n{job['caption']}" if job.get('caption') else '') )[:1020], 'reply_markup': review_keyboard(job['id'], job['url'], job.get('fix', ''))}
             REVIEWS[job['id']] = {'chat': job['chat'], 'url': job['url'], 'video_url': job.get('video_url', ''), 'headline': job['headline'], 'caption': job.get('caption', ''), 'layout': layout, 'fix': job.get('fix', '')}
         call('sendVideo', {'chat_id': job['chat'], 'supports_streaming': 'true', 'width': 1080, 'height': 1920, **extra},
              {'video': ('iraftv-zarrebin.mp4', open(out, 'rb').read(), 'video/mp4')}, timeout=300)
