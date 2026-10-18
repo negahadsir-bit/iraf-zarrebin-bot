@@ -105,13 +105,25 @@ def review_keyboard(rid):
                                            [{'text': '🔎 زوم ۱۵٪', 'callback_data': f'zm:{rid}'}, {'text': '🧽 حذف لوگو', 'callback_data': f'dl:{rid}'}],
                                            [{'text': '❌ رد', 'callback_data': f'no:{rid}'}]]})
 
+def recover_review(msg):
+    """The review record lives in state.json, which a cancelled or overlapping run can lose; the message itself carries
+    everything needed (headline, caption, tweet link), so rebuild the record from it."""
+    cap = (msg.get('caption') or '').strip()
+    m = TWEET_RE.search(cap)
+    if not m: return None
+    parts = [x.strip() for x in cap[:m.start()].strip().split('\n\n') if x.strip()]
+    if not parts: return None
+    head = [l for l in parts[0].split('\n') if not l.startswith('⚠️')][0]
+    return {'chat': str(msg['chat']['id']), 'url': m.group(0), 'video_url': '', 'headline': head, 'caption': '\n\n'.join(parts[1:]), 'layout': '', 'fix': ''}
+
 def on_button(s, cq):
     chat = str(cq['message']['chat']['id']); mid = cq['message']['message_id']
     try: call('answerCallbackQuery', {'callback_query_id': cq['id']})
     except Exception as e: print('answer failed', e)
     if chat not in ALLOWED: return
     act, _, rid = (cq.get('data') or '').partition(':')
-    rv = s.setdefault('reviews', {}).get(rid)
+    rv = s.setdefault('reviews', {}).get(rid) or recover_review(cq['message'])
+    if rv and rid not in s['reviews']: s['reviews'][rid] = rv
     def mark(txt):
         try: call('editMessageReplyMarkup', {'chat_id': chat, 'message_id': mid, 'reply_markup': json.dumps({'inline_keyboard': [[{'text': txt, 'callback_data': 'x:0'}]]})})
         except Exception as e: print('edit markup failed', e)
