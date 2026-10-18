@@ -318,7 +318,7 @@ def render_job(job):
             return
         extra = {}
         if job.get('url'):
-            extra = {'caption': ('' + f"تیتر پیشنهادی:\n{job['headline']}{caption_note}" + (f"\n\nکپشن:\n{job['caption']}" if job.get('caption') else '') + f"\n\n{job['url']}")[:1020], 'reply_markup': review_keyboard(job['id'])}
+            extra = {'caption': ('' + f"{job['headline']}{caption_note}" + (f"\n\n{job['caption']}" if job.get('caption') else '') + f"\n\n{job['url']}")[:1020], 'reply_markup': review_keyboard(job['id'])}
             REVIEWS[job['id']] = {'chat': job['chat'], 'url': job['url'], 'video_url': job.get('video_url', ''), 'headline': job['headline'], 'caption': job.get('caption', ''), 'layout': layout}
         call('sendVideo', {'chat_id': job['chat'], 'supports_streaming': 'true', 'width': 1080, 'height': 1920, **extra},
              {'video': ('iraftv-zarrebin.mp4', open(out, 'rb').read(), 'video/mp4')}, timeout=300)
