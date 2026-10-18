@@ -102,6 +102,7 @@ TWEET_RE = re.compile(r'https?://(?:www\.|mobile\.)?(?:x|twitter)\.com/[^/\s]+/s
 
 def review_keyboard(rid):
     return json.dumps({'inline_keyboard': [[{'text': '✅ تأیید', 'callback_data': f'ok:{rid}'}, {'text': '✏️ اصلاح تیتر', 'callback_data': f'ed:{rid}'}],
+                                           [{'text': '🔎 زوم ۱۵٪', 'callback_data': f'zm:{rid}'}, {'text': '🧽 حذف لوگو', 'callback_data': f'dl:{rid}'}],
                                            [{'text': '❌ رد', 'callback_data': f'no:{rid}'}]]})
 
 def on_button(s, cq):
@@ -118,6 +119,12 @@ def on_button(s, cq):
         mark('✅ تأیید شد'); s['reviews'].pop(rid, None)
     elif act == 'no':
         mark('❌ رد شد'); s['reviews'].pop(rid, None)
+    elif act in ('zm', 'dl'):
+        if not rv: say(chat, 'این مورد دیگر در دسترس نیست.'); return
+        fix = 'zoom' if act == 'zm' else 'delogo'
+        if rv.get('fix') == fix: say(chat, 'این تغییر همین الان روی ویدیو اعمال شده است.'); return
+        s['jobs'].append({'chat': chat, 'url': rv['url'], 'video_url': rv.get('video_url', ''), 'headline': rv['headline'], 'caption': rv.get('caption', ''), 'layout': rv.get('layout', ''), 'fix': fix, 'id': rid, 'review': True})
+        say(chat, '🔎 ویدیو را با زوم دوباره می‌سازم.' if fix == 'zoom' else '🧽 لوگوها را پیدا و پاک می‌کنم و دوباره می‌سازم.')
     elif act == 'ed':
         if not rv: say(chat, 'این مورد دیگر در دسترس نیست.'); return
         s['pending'][chat] = {'step': 'edit', 'review': rid, 'at': time.time()}
@@ -160,7 +167,7 @@ def process(s, timeout=0):
                 say(chat, f'تیتر بلند است ({len(text)} حرف). حداکثر {MAX_HEADLINE} حرف؛ کوتاه‌ترش کن و دوباره بفرست.')
             else:
                 rid = s['pending'].pop(chat)['review']
-                s['jobs'].append({'chat': chat, 'url': rv['url'], 'video_url': rv.get('video_url', ''), 'headline': text, 'caption': rv.get('caption', ''), 'layout': rv.get('layout', ''), 'id': rid, 'review': True})
+                s['jobs'].append({'chat': chat, 'url': rv['url'], 'video_url': rv.get('video_url', ''), 'headline': text, 'caption': rv.get('caption', ''), 'layout': rv.get('layout', ''), 'fix': rv.get('fix', ''), 'id': rid, 'review': True})
                 say(chat, '✅ تیتر جدید ثبت شد؛ ساخت دوباره شروع می‌شود.')
         elif text and s['pending'].get(chat, {}).get('step') == 'layout':
             if text in ('عمودی', 'افقی'):
@@ -251,6 +258,57 @@ def news_from(text):
             print('deepseek failed', e); time.sleep(2)
     return '', ''
 
+def probe_size(path):
+    o = json.loads(subprocess.check_output(['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=width,height', '-of', 'json', path]))['streams'][0]
+    return o['width'], o['height']
+
+def find_logos(path, frames=36):
+    """Boxes (x, y, w, h in full-size pixels) of static, edge-rich overlays (channel logos, handles, URLs) in the corners.
+    A pixel counts as overlay when it hardly changes across the whole video but has strong local contrast.
+    Returns [] when the picture itself is static (a locked-off shot), so real content is never erased."""
+    import numpy as np
+    W, H = probe_size(path)
+    w, h = 320, max(2, int(320 * H / W) // 2 * 2)
+    dur = max(1.0, video_length(path))
+    raw = subprocess.run(['ffmpeg', '-v', 'error', '-i', path, '-vf', f'fps={frames / dur:.4f},scale={w}:{h},format=gray', '-f', 'rawvideo', '-'],
+                         stdout=subprocess.PIPE, check=True).stdout
+    n = len(raw) // (w * h)
+    if n < 6: return []
+    a = np.frombuffer(raw[:n * w * h], np.uint8).reshape(n, h, w).astype(np.float32)
+    std, mean = a.std(0), a.mean(0)
+    gy, gx = np.gradient(mean)
+    edge = np.hypot(gx, gy)
+    static = (std < 7) & (edge > 10)
+    if (std < 7).mean() > 0.85: return []
+    out = []
+    ch, cw = int(h * 0.25), int(w * 0.42)
+    for ys, xs in ((slice(0, ch), slice(0, cw)), (slice(0, ch), slice(w - cw, w)), (slice(h - ch, h), slice(0, cw)), (slice(h - ch, h), slice(w - cw, w))):
+        m = static[ys, xs]
+        if m.sum() < 25: continue
+        yy, xx = np.nonzero(m)
+        y0, y1 = np.percentile(yy, [1, 99]); x0, x1 = np.percentile(xx, [1, 99])
+        y0 += ys.start; y1 += ys.start; x0 += xs.start; x1 += xs.start
+        pad = 4
+        x0, y0, x1, y1 = max(1, x0 - pad), max(1, y0 - pad), min(w - 2, x1 + pad), min(h - 2, y1 + pad)
+        bw, bh = (x1 - x0) / w, (y1 - y0) / h
+        if bw < 0.04 or bh < 0.02 or bw > 0.4 or bh > 0.22: continue
+        out.append((int(x0 * W / w), int(y0 * H / h), int((x1 - x0) * W / w), int((y1 - y0) * H / h)))
+    return out
+
+def clean_source(src, mode, work):
+    """Pre-process the source: 'zoom' = centre crop 15 % (pushes corner logos out of frame); 'delogo' = erase detected corner overlays."""
+    W, H = probe_size(src)
+    out = os.path.join(work, 'fixed.mp4')
+    if mode == 'zoom':
+        vf = f'crop=trunc(iw/1.15/2)*2:trunc(ih/1.15/2)*2,scale={W}:{H},setsar=1'
+    else:
+        boxes = find_logos(src)
+        print('logo boxes', boxes, flush=True)
+        if not boxes: return src
+        vf = ','.join(f'delogo=x={min(x, W - 3)}:y={min(y, H - 3)}:w={max(2, min(w, W - x - 2))}:h={max(2, min(h, H - y - 2))}' for x, y, w, h in boxes)
+    subprocess.run(['ffmpeg', '-v', 'error', '-y', '-i', src, '-vf', vf, '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '18', '-c:a', 'copy', out], check=True)
+    return out
+
 class NoVideo(Exception): pass
 
 def fetch_tweet(url):
@@ -297,6 +355,9 @@ def render_job(job):
             with urllib.request.urlopen(req, timeout=300) as r, open(src, 'wb') as f: shutil.copyfileobj(r, f)
         else:
             download(job['file_id'], src)
+        if job.get('fix'):
+            prog.set(10, 'اصلاح ویدیو (زوم یا حذف لوگو)', force=True)
+            src = clean_source(src, job['fix'], work)
         prog.set(15, 'آماده‌سازی تیتر')
         h = balance(job['headline']).replace('\n', '|')
         layout = job.get('layout') or ('land' if is_landscape(src) else 'portrait')
@@ -319,7 +380,7 @@ def render_job(job):
         extra = {}
         if job.get('url'):
             extra = {'caption': ('' + f"{job['headline']}{caption_note}" + (f"\n\n{job['caption']}" if job.get('caption') else '') + f"\n\n{job['url']}")[:1020], 'reply_markup': review_keyboard(job['id'])}
-            REVIEWS[job['id']] = {'chat': job['chat'], 'url': job['url'], 'video_url': job.get('video_url', ''), 'headline': job['headline'], 'caption': job.get('caption', ''), 'layout': layout}
+            REVIEWS[job['id']] = {'chat': job['chat'], 'url': job['url'], 'video_url': job.get('video_url', ''), 'headline': job['headline'], 'caption': job.get('caption', ''), 'layout': layout, 'fix': job.get('fix', '')}
         call('sendVideo', {'chat_id': job['chat'], 'supports_streaming': 'true', 'width': 1080, 'height': 1920, **extra},
              {'video': ('iraftv-zarrebin.mp4', open(out, 'rb').read(), 'video/mp4')}, timeout=300)
         prog.done()
@@ -337,7 +398,7 @@ def render():
         except TooLong:
             say(job['chat'], 'تیتر برای دو خط با اندازهٔ استاندارد خیلی بلند است و فونت باید ریز می‌شد. هر خط حدود ۳۶ حرف جا دارد (حدود ۷۰ حرف در کل). کوتاه‌ترش کن و دوباره بفرست؛ ویدیو نگه داشته شده است.')
             if job.get('url'):
-                REVIEWS[job['id']] = {'chat': job['chat'], 'url': job['url'], 'video_url': job.get('video_url', ''), 'headline': job.get('headline', ''), 'caption': job.get('caption', ''), 'layout': job.get('layout', '')}
+                REVIEWS[job['id']] = {'chat': job['chat'], 'url': job['url'], 'video_url': job.get('video_url', ''), 'headline': job.get('headline', ''), 'caption': job.get('caption', ''), 'layout': job.get('layout', ''), 'fix': job.get('fix', '')}
                 s['pending'][job['chat']] = {'step': 'edit', 'review': job['id'], 'at': time.time()}
             else:
                 s['pending'][job['chat']] = {'file_id': job['file_id'], 'at': time.time(), 'step': 'headline', 'layout': job.get('layout', '')}
@@ -355,7 +416,7 @@ _installed = False
 def ensure_renderer():
     global _installed
     if _installed: return
-    for c in ('npm install --no-audit --no-fund', 'npx playwright install --with-deps chromium',
+    for c in ('python3 -c "import numpy" || pip install --break-system-packages numpy', 'npm install --no-audit --no-fund', 'npx playwright install --with-deps chromium',
               'which ffmpeg || sudo apt-get install -y ffmpeg'):
         subprocess.check_call(c, shell=True)
     _installed = True
