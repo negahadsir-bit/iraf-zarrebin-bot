@@ -11,6 +11,7 @@ jobs:
     env:
       BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
       ALLOWED_CHAT_IDS: ${{ secrets.ALLOWED_CHAT_IDS }}
+      DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/cache@v4

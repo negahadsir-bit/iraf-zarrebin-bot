@@ -174,6 +174,33 @@ def is_landscape(path):
     if abs(int((out.get('side_data_list') or [{}])[0].get('rotation', 0))) % 180 == 90: w, h = h, w
     return w > h * 1.05
 
+DEEPSEEK_KEY = os.environ.get('DEEPSEEK_API_KEY', '')
+
+def headline_from(text, source_lang=''):
+    """Translate a news caption to Persian and cut it to a headline of at most MAX_HEADLINE characters (DeepSeek, normal non-reasoning mode).
+    Returns '' when no key is set or the call fails, so callers can fall back to asking the user."""
+    if not DEEPSEEK_KEY or not text.strip(): return ''
+    sysmsg = (f'تو سردبیر یک شبکهٔ خبری فارسی‌زبان هستی. متن خبر را به فارسی روان و رسمی ترجمه کن و به یک تیتر کوتاه خبری تبدیل کن. '
+              f'تیتر باید حداکثر {MAX_HEADLINE - 6} نویسه باشد، فقط شامل مهم‌ترین خبر، بدون هشتگ، ایموجی، نقل‌قول اضافی و نقطهٔ پایانی. '
+              'فقط خود تیتر را بنویس، بدون توضیح.')
+    body = json.dumps({'model': 'deepseek-chat', 'temperature': 0.3, 'max_tokens': 120,
+                       'messages': [{'role': 'system', 'content': sysmsg},
+                                    {'role': 'user', 'content': text.strip()[:3000]}]}).encode()
+    req = urllib.request.Request('https://api.deepseek.com/chat/completions', body,
+                                 {'Content-Type': 'application/json', 'Authorization': f'Bearer {DEEPSEEK_KEY}'})
+    for attempt in range(2):
+        try:
+            with urllib.request.urlopen(req, timeout=60) as r:
+                out = json.load(r)['choices'][0]['message']['content'].strip().strip('"«»').rstrip('.')
+            out = re.sub(r'\s+', ' ', out)
+            if len(out) <= MAX_HEADLINE: return out
+            body2 = json.loads(body); body2['messages'].append({'role': 'assistant', 'content': out})
+            body2['messages'].append({'role': 'user', 'content': f'این {len(out)} نویسه است؛ کوتاه‌ترش کن تا حداکثر {MAX_HEADLINE - 6} نویسه شود.'})
+            req = urllib.request.Request(req.full_url, json.dumps(body2).encode(), dict(req.header_items()))
+        except Exception as e:
+            print('deepseek failed', e); time.sleep(2)
+    return ''
+
 class TooLong(Exception): pass
 
 def render_job(job):
