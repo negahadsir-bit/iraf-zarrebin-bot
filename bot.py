@@ -98,10 +98,37 @@ def output(k, v):
     p = os.environ.get('GITHUB_OUTPUT')
     if p: open(p, 'a').write(f'{k}={v}\n')
 
+TWEET_RE = re.compile(r'https?://(?:www\.|mobile\.)?(?:x|twitter)\.com/[^/\s]+/status/(\d+)\S*')
+
+def review_keyboard(rid):
+    return json.dumps({'inline_keyboard': [[{'text': '✅ تأیید', 'callback_data': f'ok:{rid}'}, {'text': '✏️ اصلاح تیتر', 'callback_data': f'ed:{rid}'}],
+                                           [{'text': '❌ رد', 'callback_data': f'no:{rid}'}]]})
+
+def on_button(s, cq):
+    chat = str(cq['message']['chat']['id']); mid = cq['message']['message_id']
+    try: call('answerCallbackQuery', {'callback_query_id': cq['id']})
+    except Exception as e: print('answer failed', e)
+    if chat not in ALLOWED: return
+    act, _, rid = (cq.get('data') or '').partition(':')
+    rv = s.setdefault('reviews', {}).get(rid)
+    def mark(txt):
+        try: call('editMessageReplyMarkup', {'chat_id': chat, 'message_id': mid, 'reply_markup': json.dumps({'inline_keyboard': [[{'text': txt, 'callback_data': 'x:0'}]]})})
+        except Exception as e: print('edit markup failed', e)
+    if act == 'ok':
+        mark('✅ تأیید شد'); s['reviews'].pop(rid, None)
+    elif act == 'no':
+        mark('❌ رد شد'); s['reviews'].pop(rid, None)
+    elif act == 'ed':
+        if not rv: say(chat, 'این مورد دیگر در دسترس نیست.'); return
+        s['pending'][chat] = {'step': 'edit', 'review': rid, 'at': time.time()}
+        say(chat, f'✏️ تیتر جدید را بنویس (حداکثر {MAX_HEADLINE} حرف).')
+
 def process(s, timeout=0):
-    r = call('getUpdates', {'offset': s['offset'], 'timeout': timeout, 'allowed_updates': json.dumps(['message'])}, timeout=timeout + 30)
+    r = call('getUpdates', {'offset': s['offset'], 'timeout': timeout, 'allowed_updates': json.dumps(['message', 'callback_query'])}, timeout=timeout + 30)
     for u in r.get('result', []):
         s['offset'] = u['update_id'] + 1
+        if u.get('callback_query'):
+            on_button(s, u['callback_query']); continue
         m = u.get('message')
         if not m: continue
         chat = str(m['chat']['id'])
@@ -116,11 +143,25 @@ def process(s, timeout=0):
                 continue
             s['pending'][chat] = {'file_id': vid['file_id'], 'at': time.time(), 'step': 'layout'}
             ask_layout(chat)
+        elif TWEET_RE.search(text) and not text.startswith('/'):
+            s['pending'].pop(chat, None)
+            s['jobs'].append({'chat': chat, 'url': TWEET_RE.search(text).group(0), 'layout': '', 'headline': '', 'id': uuid.uuid4().hex[:8]})
+            say(chat, '🔗 لینک را گرفتم؛ ویدیو و متن توییت را می‌گیرم و تیتر پیشنهادی را آماده می‌کنم.')
         elif text.startswith('/'):
             if text.startswith('/start') or text.startswith('/help'):
-                say(chat, 'سلام 👋\nاول ویدیو را بفرست، بعد تیتر را در یک پیام متنی بنویس. برای شکستن خط، تیتر را در چند خط بنویس.\nساخت چند دقیقه طول می‌کشد و پیشرفتش را همین‌جا می‌بینی.')
+                say(chat, 'سلام 👋\nلینک یک توییت ویدیویی (x.com) بفرست تا خودم ویدیو را بگیرم، تیتر را ترجمه و کوتاه کنم و برای تأیید برایت بفرستم.\nیا اول ویدیو را بفرست، بعد تیتر را در یک پیام متنی بنویس. برای شکستن خط، تیتر را در چند خط بنویس.\nساخت چند دقیقه طول می‌کشد و پیشرفتش را همین‌جا می‌بینی.')
             elif text.startswith('/cancel'):
                 s['pending'].pop(chat, None); say(chat, 'لغو شد. هر وقت خواستی ویدیوی تازه‌ای بفرست.')
+        elif text and s['pending'].get(chat, {}).get('step') == 'edit':
+            rv = s.get('reviews', {}).get(s['pending'][chat].get('review'))
+            if not rv:
+                s['pending'].pop(chat, None); say(chat, 'این مورد دیگر در دسترس نیست.')
+            elif len(text) > MAX_HEADLINE:
+                say(chat, f'تیتر بلند است ({len(text)} حرف). حداکثر {MAX_HEADLINE} حرف؛ کوتاه‌ترش کن و دوباره بفرست.')
+            else:
+                rid = s['pending'].pop(chat)['review']
+                s['jobs'].append({'chat': chat, 'url': rv['url'], 'video_url': rv.get('video_url', ''), 'headline': text, 'layout': rv.get('layout', ''), 'id': rid, 'review': True})
+                say(chat, '✅ تیتر جدید ثبت شد؛ ساخت دوباره شروع می‌شود.')
         elif text and s['pending'].get(chat, {}).get('step') == 'layout':
             if text in ('عمودی', 'افقی'):
                 s['pending'][chat]['layout'] = 'land' if text == 'افقی' else 'portrait'
@@ -201,6 +242,31 @@ def headline_from(text, source_lang=''):
             print('deepseek failed', e); time.sleep(2)
     return ''
 
+class NoVideo(Exception): pass
+
+def fetch_tweet(url):
+    """Public tweet -> (text, best mp4 url) through X's embed endpoint (no login needed)."""
+    tid = TWEET_RE.search(url).group(1)
+    req = urllib.request.Request(f'https://cdn.syndication.twimg.com/tweet-result?id={tid}&token=a&lang=en', headers={'User-Agent': 'Mozilla/5.0'})
+    with urllib.request.urlopen(req, timeout=30) as r: d = json.load(r)
+    best = None
+    for m in d.get('mediaDetails', []):
+        for v in (m.get('video_info') or {}).get('variants', []):
+            if v.get('content_type') == 'video/mp4' and (best is None or v.get('bitrate', 0) > best.get('bitrate', 0)): best = v
+    if not best: raise NoVideo()
+    return d.get('text', ''), best['url']
+
+def clean_caption(t):
+    t = re.sub(r'https?://\S+', '', t); t = t.replace('#', '').replace('_', ' ')
+    return re.sub(r'\s+', ' ', t).strip()
+
+def fallback_headline(t):
+    t = clean_caption(t)
+    if len(t) <= MAX_HEADLINE - 6: return t
+    return t[:MAX_HEADLINE - 6].rsplit(' ', 1)[0]
+
+REVIEWS = {}
+
 class TooLong(Exception): pass
 
 def render_job(job):
@@ -209,7 +275,19 @@ def render_job(job):
         src, out = os.path.join(work, 'in.mp4'), os.path.join(work, 'out.mp4')
         prog = Progress(job['chat'])
         prog.set(5, 'دریافت ویدیو', force=True)
-        download(job['file_id'], src)
+        caption_note = ''
+        if job.get('url'):
+            if not job.get('video_url'):
+                text, job['video_url'] = fetch_tweet(job['url'])
+                if not job.get('headline'):
+                    job['headline'] = headline_from(clean_caption(text))
+                    if not job['headline']:
+                        job['headline'] = fallback_headline(text)
+                        caption_note = '\n⚠️ ترجمهٔ خودکار انجام نشد؛ متن اصلی کوتاه شده است. با «اصلاح تیتر» درستش کن.'
+            req = urllib.request.Request(job['video_url'], headers={'User-Agent': 'Mozilla/5.0'})
+            with urllib.request.urlopen(req, timeout=300) as r, open(src, 'wb') as f: shutil.copyfileobj(r, f)
+        else:
+            download(job['file_id'], src)
         prog.set(15, 'آماده‌سازی تیتر')
         h = balance(job['headline']).replace('\n', '|')
         layout = job.get('layout') or ('land' if is_landscape(src) else 'portrait')
@@ -229,7 +307,11 @@ def render_job(job):
         if os.path.getsize(out) > MAX_UP:
             say(job['chat'], f'ویدیوی نهایی از {MAX_UP // 1048576} مگابایت بیشتر شد و تلگرام اجازهٔ ارسالش را نمی‌دهد. ویدیوی کوتاه‌تری بفرست.')
             return
-        call('sendVideo', {'chat_id': job['chat'], 'supports_streaming': 'true', 'width': 1080, 'height': 1920},
+        extra = {}
+        if job.get('url'):
+            extra = {'caption': f"تیتر پیشنهادی:\n{job['headline']}{caption_note}\n\n{job['url']}", 'reply_markup': review_keyboard(job['id'])}
+            REVIEWS[job['id']] = {'chat': job['chat'], 'url': job['url'], 'video_url': job.get('video_url', ''), 'headline': job['headline'], 'layout': layout}
+        call('sendVideo', {'chat_id': job['chat'], 'supports_streaming': 'true', 'width': 1080, 'height': 1920, **extra},
              {'video': ('iraftv-zarrebin.mp4', open(out, 'rb').read(), 'video/mp4')}, timeout=300)
         prog.done()
     finally:
@@ -241,15 +323,23 @@ def render():
     for job in s['jobs']:
         try:
             render_job(job)
+        except NoVideo:
+            say(job['chat'], 'این توییت ویدیو ندارد (یا خصوصی است).')
         except TooLong:
             say(job['chat'], 'تیتر برای دو خط با اندازهٔ استاندارد خیلی بلند است و فونت باید ریز می‌شد. هر خط حدود ۳۶ حرف جا دارد (حدود ۷۰ حرف در کل). کوتاه‌ترش کن و دوباره بفرست؛ ویدیو نگه داشته شده است.')
-            s['pending'][job['chat']] = {'file_id': job['file_id'], 'at': time.time(), 'step': 'headline', 'layout': job.get('layout', '')}
+            if job.get('url'):
+                REVIEWS[job['id']] = {'chat': job['chat'], 'url': job['url'], 'video_url': job.get('video_url', ''), 'headline': job.get('headline', ''), 'layout': job.get('layout', '')}
+                s['pending'][job['chat']] = {'step': 'edit', 'review': job['id'], 'at': time.time()}
+            else:
+                s['pending'][job['chat']] = {'file_id': job['file_id'], 'at': time.time(), 'step': 'headline', 'layout': job.get('layout', '')}
         except Exception as e:
             print('job failed', job['id'], e)
             job['tries'] = job.get('tries', 0) + 1
             if job['tries'] < 2: left.append(job)
             else: say(job['chat'], 'ساخت این ویدیو انجام نشد. لطفاً دوباره بفرستش یا ویدیوی دیگری امتحان کن.')
     s['jobs'] = left
+    s.setdefault('reviews', {}).update(REVIEWS); REVIEWS.clear()
+    for k in list(s['reviews'])[:-60]: s['reviews'].pop(k)
     save(s)
 
 _installed = False
