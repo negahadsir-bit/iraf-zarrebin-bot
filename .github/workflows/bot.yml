@@ -20,21 +20,28 @@ jobs:
             ~/.cache/ms-playwright
             node_modules
           key: renderer-${{ hashFiles('package.json') }}
+      - name: Restore Bot API session (avoids a fresh Telegram login, and its flood limit, on every run)
+        id: tgcache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/tgdata
+          key: tgdata-${{ github.run_id }}
+          restore-keys: tgdata-
       - name: Local Bot API server (optional; lifts the 20 MB file limit to 2 GB)
         env:
           API_ID: ${{ secrets.TELEGRAM_API_ID }}
           API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
         run: |
           if [ -n "$API_ID" ] && [ -n "$API_HASH" ]; then
-            mkdir -p "$RUNNER_TEMP/tgdata"
+            mkdir -p "$HOME/tgdata"; chmod -R a+rwX "$HOME/tgdata"
             docker run -d --name tgapi -p 8081:8081 \
-              -v "$RUNNER_TEMP/tgdata:/var/lib/telegram-bot-api" \
+              -v "$HOME/tgdata:/var/lib/telegram-bot-api" \
               -e TELEGRAM_API_ID="$API_ID" -e TELEGRAM_API_HASH="$API_HASH" -e TELEGRAM_LOCAL=1 \
               aiogram/telegram-bot-api:latest || true
             for i in $(seq 1 20); do
               if curl -s -o /dev/null http://127.0.0.1:8081/; then
                 echo "TELEGRAM_API_URL=http://127.0.0.1:8081" >> "$GITHUB_ENV"
-                echo "TELEGRAM_DATA=$RUNNER_TEMP/tgdata" >> "$GITHUB_ENV"
+                echo "TELEGRAM_DATA=$HOME/tgdata" >> "$GITHUB_ENV"
                 echo "local Bot API server is up"; break
               fi
               sleep 2
@@ -43,6 +50,17 @@ jobs:
           fi
       - name: Run bot (live for about 5 minutes)
         run: python3 bot.py serve
+      - name: Stop Bot API and keep its session for the next run
+        if: always()
+        run: |
+          docker stop tgapi 2>/dev/null || true
+          sudo chown -R "$USER" "$HOME/tgdata" 2>/dev/null || true
+      - name: Save Bot API session
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: ~/tgdata
+          key: tgdata-${{ github.run_id }}
       - name: Save state
         if: always()
         run: |
