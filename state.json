@@ -1,5 +1,5 @@
 {
- "offset": 512143388,
+ "offset": 382165262,
  "pending": {
   "94554237": {
    "file_id": "BAACAgQAAxkBAAIB5GrUg3il_z9jgBmmLdM2s6H5LjqvAAJjCwACDQesUjUXSXzXcGV4PQQ",
@@ -7,5 +7,14 @@
    "step": "layout"
   }
  },
- "jobs": []
+ "jobs": [],
+ "reviews": {
+  "0278260b": {
+   "chat": "6205566163",
+   "url": "https://x.com/kashmirtodo2/status/2111742952901054538?s=46",
+   "video_url": "https://video.twimg.com/amplify_video/2111742604048207872/vid/avc1/720x1278/UyAwWuI4I2mMZkp7.mp4",
+   "headline": "اتهام نظامیان پاکستان به سرقت طلا از خانه‌ها در خیبر",
+   "layout": "portrait"
+  }
+ }
 }
