@@ -10,24 +10,26 @@ from refine import _cut
 from select_clips import _done
 from retry import BusyError, QuotaError
 
-PAD = 1.5
+PAD = 10.0  # absorbs small timing drift of the first transcript
 LEAD, TAIL = 0.15, 0.35
-MIN_LEN, MAX_LEN = 18.0, 70.0
+MIN_LEN, MAX_LEN = 20.0, 70.0
 MIN_SENTENCES = 3
 
 
-def _prompt(sents) -> str:
+def _prompt(sents, reason: str = "") -> str:
     lines = [f"[{i}] ({round(s.end - s.start)}ث) {s.text}" for i, s in enumerate(sents)]
     return (
         "تو ویراستار نهایی یک برش ویدیویی کوتاه از مصاحبه‌ی فارسی افغانستانی (دری) هستی. متن زیر از روی "
         "صدا نوشته شده و ممکن است کلمه‌های غلط یا بی‌معنی داشته باشد؛ معنا را با لهجه‌ی دری بفهم. "
+        + (f"موضوع مورد انتظار این برش: «{reason}». بازه را از همان بخش انتخاب کن؛ جمله‌های اطراف "
+           "فقط برای پیدا کردن مرز درست‌اند.\n" if reason else "") +
         "یک بازه‌ی پیوسته از جمله‌ها انتخاب کن که به‌تنهایی یک ویدیوی کامل و تأثیرگذار باشد:\n"
         "- شروع باید فکر یا روایت را از اول و مستقل باز کند؛ نه ادامه‌ی جمله‌ی قبل، نه وابسته به «این/آن» "
         "بدون مرجع، نه «ببین/خب/مثلاً» بی‌محتوا، نه وسط یک داستان بدون مقدمه.\n"
         "- پایان باید قوی‌ترین جمله‌ی همان فکر باشد (نتیجه، پانچ یا اوج احساسی). هر چه بعد از اوج می‌آید "
         "و ضعیف‌تر یا تکراری یا اضافه است حذف شود؛ کوتاه‌تر و تأثیرگذارتر بهتر از طولانی است.\n"
         "- آخرین جمله‌ی بازه باید کامل باشد؛ جمله‌ی نیمه‌تمام مثل «گفتند که» یا «و بعد» را پایان قرار نده.\n"
-        "- مدت بازه ترجیحاً ۲۵ تا ۶۰ ثانیه و حداکثر ۷۰ ثانیه باشد.\n"
+        "- مدت بازه ترجیحاً ۳۰ تا ۶۰ ثانیه، هرگز کمتر از ۲۰ و حداکثر ۷۰ ثانیه باشد.\n"
         "- جمله‌ی نامفهوم، خراب یا بی‌معنی (مثلاً ترکیب کلمه‌های بی‌ربط) داخل بازه نباشد.\n"
         "- اگر هیچ بازه‌ی معنادار، مستقل و کامل در این متن نیست، ok را false بده.\n"
         'فقط JSON برگردان: [{"from": شماره‌ی جمله, "to": شماره‌ی جمله, "ok": true یا false, '
@@ -43,17 +45,12 @@ def finalize_one(clip: Clip, audio: Path, total: float, tclient, sclient, workdi
     heard = listen(_cut(audio, w0, w1 - w0, dest)) or []
     if not heard:  # nothing heard (a failed listen or no speech here): keep the clip, flagged
         return replace(clip, shaky=True)
-    lo, hi = clip.start - w0, clip.end - w0
-    sents = []
-    for s in heard:
-        length = max(s.end - s.start, 0.01)
-        if (min(s.end, hi) - max(s.start, lo)) / length >= 0.5:
-            sents.append(s)
+    sents = list(heard)
     if len(sents) < MIN_SENTENCES:  # a stretch of music or silence, not an interview answer
         print(f"finalize clip {clip.rank}: only {len(sents)} spoken sentence(s), dropped",
               file=sys.stderr, flush=True)
         return None
-    rows = sclient.generate_json(_prompt(sents))
+    rows = sclient.generate_json(_prompt(sents, clip.reason))
     row = rows[0] if isinstance(rows, list) and rows and isinstance(rows[0], dict) else None
     if row is None:
         return clip

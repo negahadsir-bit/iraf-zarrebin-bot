@@ -7,8 +7,8 @@ import finalize
 from models import Clip, Sentence
 from retry import QuotaError
 
-CLIP = Clip(1, 100.0, 170.0, "r", text="x", top=True, shaky=True)
-# window starts at 98.5: sentences are window-local
+CLIP = Clip(1, 100.0, 170.0, "قصه‌ی کتاب", text="x", top=True, shaky=True)
+W0 = 100.0 - finalize.PAD  # the listening window starts here: heard sentences are window-local
 HEARD = [Sentence("ببین مثلا.", 0.0, 1.0),                 # outside the clip (before it)
          Sentence("شروع مستقل است.", 2.0, 12.0),
          Sentence("ادامه‌ی ماجرا.", 12.0, 30.0),
@@ -48,18 +48,19 @@ class FinalizeTests(unittest.TestCase):
         return finalize.finalize_one(clip, Path("a.mp3"), 1000.0, tc or Tc(), sc, self.wd)
 
     def test_trims_tail_after_the_peak(self):
-        # candidates (inside the clip): 0 شروع, 1 ادامه, 2 اوج, 3 اضافه -> keep 0..2
-        out = self.one(Sc([{"from": 0, "to": 2, "ok": True}]))
-        self.assertAlmostEqual(out.start, 98.5 + 2.0 - finalize.LEAD)
-        self.assertAlmostEqual(out.end, 98.5 + 52.0 + finalize.TAIL)
+        # heard: 0 ببین, 1 شروع, 2 ادامه, 3 اوج, 4 اضافه -> keep 1..3
+        out = self.one(Sc([{"from": 1, "to": 3, "ok": True}]))
+        self.assertAlmostEqual(out.start, W0 + 2.0 - finalize.LEAD)
+        self.assertAlmostEqual(out.end, W0 + 52.0 + finalize.TAIL)
         self.assertEqual(out.text, "شروع مستقل است. ادامه‌ی ماجرا. اوج احساسی همین است.")
         self.assertFalse(out.shaky)
         self.assertTrue(out.top)
 
-    def test_sentence_before_the_clip_is_not_offered(self):
-        sc = Sc([{"from": 0, "to": 2, "ok": True}])
+    def test_surroundings_and_expected_topic_are_offered(self):
+        sc = Sc([{"from": 1, "to": 3, "ok": True}])
         self.one(sc)
-        self.assertNotIn("ببین مثلا", sc.prompts[0])
+        self.assertIn("ببین مثلا", sc.prompts[0])
+        self.assertIn("قصه‌ی کتاب", sc.prompts[0])
 
     def test_not_ok_drops_clip(self):
         self.assertIsNone(self.one(Sc([{"ok": False, "note": "بی‌معنی"}])))
@@ -85,10 +86,10 @@ class FinalizeTests(unittest.TestCase):
         heard = [Sentence("ببین مثلا.", 0.0, 1.0), Sentence("شروع مستقل است.", 2.0, 12.0),
                  Sentence("ادامه‌ی ماجرا.", 12.0, 30.0), Sentence("اوج احساسی همین است.", 30.0, 52.0),
                  Sentence("گفتند که", 52.0, 60.0)]
-        out = self.one(Sc([{"from": 0, "to": 3, "ok": True}]), tc=Tc(heard))
+        out = self.one(Sc([{"from": 1, "to": 4, "ok": True}]), tc=Tc(heard))
         self.assertEqual(out.text.split()[-1], "است.")
-        out = self.one(Sc([{"from": 0, "to": 3, "ok": True}]), tc=Tc(heard[:4] + [Sentence("گفتند که", 52.0, 60.0)]))
-        self.assertAlmostEqual(out.end, 98.5 + 52.0 + finalize.TAIL)
+        out = self.one(Sc([{"from": 1, "to": 4, "ok": True}]), tc=Tc(heard[:4] + [Sentence("گفتند که", 52.0, 60.0)]))
+        self.assertAlmostEqual(out.end, W0 + 52.0 + finalize.TAIL)
 
     def test_careful_listening_is_preferred_when_available(self):
         class Careful(Tc):
@@ -103,7 +104,7 @@ class FinalizeTests(unittest.TestCase):
             def transcribe_sentences(self, path):
                 raise AssertionError("should use the careful listener")
         tc = Careful()
-        self.one(Sc([{"from": 0, "to": 2, "ok": True}]), tc=tc)
+        self.one(Sc([{"from": 1, "to": 3, "ok": True}]), tc=tc)
         self.assertTrue(tc.used)
 
 
@@ -129,12 +130,12 @@ class FinalizeClipsTests(unittest.TestCase):
     def test_drops_and_renumbers(self):
         a = Clip(1, 100.0, 170.0, "r", text="x")
         b = Clip(2, 300.0, 370.0, "r", text="y")
-        answers = iter([[{"ok": False}], [{"from": 0, "to": 2, "ok": True}]])
+        answers = iter([[{"ok": False}], [{"from": 1, "to": 3, "ok": True}]])
         sc = Sc()
         sc.generate_json = lambda p: next(answers)
         out = self.run_it([a, b], sc)
         self.assertEqual([c.rank for c in out], [1])
-        self.assertAlmostEqual(out[0].start, 298.5 + 2.0 - finalize.LEAD)
+        self.assertAlmostEqual(out[0].start, (300.0 - finalize.PAD) + 2.0 - finalize.LEAD)
 
     def test_all_dropped_returns_originals(self):
         out = self.run_it([CLIP], Sc([{"ok": False}]))
