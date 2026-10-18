@@ -1,56 +1,45 @@
 #!/usr/bin/env python3
-"""Synthesises assets/news_bed.mp3: a rhythmic, tense news-style bed (A minor, 120 BPM, 16 bars = 32 s, loops cleanly).
-No samples and no licensing issues: kick, snare, hats, pulsing bass and a plucked arpeggio, all generated here."""
+"""Synthesises assets/news_bed.mp3: a calm, mellow background bed (A minor, 76 BPM, 12 bars, loops cleanly).
+Soft pad chords, a warm bass note per bar and a sparse bell-like pluck melody; no drums. All generated here, no samples."""
 import numpy as np, subprocess, sys
-SR, BPM, BARS = 44100, 120, 16
-beat = 60 / BPM; N = int(SR * beat * 4 * BARS)
-t = np.arange(N) / SR
-rng = np.random.default_rng(7)
-def env(n, a=0.005, d=0.2):
-    x = np.arange(n) / SR
-    return np.minimum(x / a, 1) * np.exp(-x / d)
-def place(buf, snd, at):
-    i = int(at * SR); j = min(len(buf), i + len(snd))
-    if i < len(buf): buf[i:j] += snd[:j - i]
-def lp(x, k):  # one-pole low-pass
-    y = np.zeros_like(x); a = k
+SR, BPM, BARS = 44100, 76, 12
+beat = 60 / BPM; bar = 4 * beat; N = int(SR * bar * BARS)
+f = lambda m: 440 * 2 ** ((m - 69) / 12)
+def add(buf, snd, at):
+    """Mix a sound in at `at` seconds, wrapping around the end so the loop has no seam."""
+    idx = (int(at * SR) + np.arange(len(snd))) % len(buf)
+    np.add.at(buf, idx, snd)
+def lp(x, a):
+    y = np.zeros_like(x)
     for i in range(1, len(x)): y[i] = y[i-1] + a * (x[i] - y[i-1])
     return y
-def saw(f, n, detune=0.004):
-    x = np.arange(n) / SR
-    return sum(2 * ((x * f * (1 + d)) % 1) - 1 for d in (-detune, 0, detune)) / 3
-kick = np.zeros(N); hat = np.zeros(N); bass = np.zeros(N); arp = np.zeros(N); snare = np.zeros(N)
-# kick: pitch-dropping sine
-kn = int(0.28 * SR); kx = np.arange(kn) / SR
-kd = np.sin(2 * np.pi * (45 * kx + 90 * (1 - np.exp(-kx * 25)) / 25 * 1.0)) * np.exp(-kx / 0.11)
-hn = int(0.05 * SR); hd = (rng.standard_normal(hn) - np.r_[0, rng.standard_normal(hn)[:-1]]) * env(hn, 0.001, 0.012)
-sn = int(0.22 * SR); sd = (rng.standard_normal(sn)) * env(sn, 0.001, 0.07) * 0.8 + np.sin(2 * np.pi * 190 * np.arange(sn) / SR) * env(sn, 0.001, 0.05) * 0.5
-prog = [57, 53, 48, 55]  # A, F, C, G (midi roots)
-f = lambda m: 440 * 2 ** ((m - 69) / 12)
-for bar in range(BARS):
-    root = prog[bar % 4]; quality = [0, 4, 7] if root != 57 else [0, 3, 7]
-    t0 = bar * 4 * beat
-    for b in range(4):
-        place(kick, kd, t0 + b * beat)
-        if b in (1, 3) and bar >= 2: place(snare, sd, t0 + b * beat)
-    for e in range(8):
-        place(hat, hd * (1.0 if e % 2 else 0.55), t0 + e * beat / 2)
-        n = int(beat / 2 * SR * 0.9)
-        place(bass, saw(f(root - 12), n, 0.002) * env(n, 0.004, 0.16) * 0.9, t0 + e * beat / 2)
-    for s16 in range(16):
-        if bar < 4 and s16 % 2: continue
-        m = root + 12 + quality[[0, 1, 2, 1, 0, 2, 1, 2][s16 % 8] if s16 % 3 else 2] + (12 if s16 % 8 == 6 else 0)
-        n = int(0.22 * SR)
-        place(arp, saw(f(m), n, 0.003) * env(n, 0.003, 0.09) * 0.5, t0 + s16 * beat / 4)
-bass = lp(bass, 0.12); arp = lp(arp, 0.35)
-mix = kick * 0.95 + hat * 0.16 + snare * 0.35 + bass * 0.55 + arp * 0.32
-mix /= np.abs(mix).max()
-mix = np.tanh(mix * 1.6) * 0.8
-# gentle stereo: delay on the arpeggio
-d = int(0.18 * beat * SR)
-L = mix + np.r_[np.zeros(d), arp[:-d]] * 0.12
-R = mix + np.r_[np.zeros(2 * d), arp[:-2 * d]] * 0.12
-st = np.stack([L, R], 1); st = (st / np.abs(st).max() * 0.85 * 32767).astype('<i2')
+pad = np.zeros(N); bass = np.zeros(N); bell = np.zeros(N)
+prog = [(57, [0, 3, 7, 10]), (53, [0, 4, 7, 11]), (48, [0, 4, 7, 11]), (55, [0, 4, 7, 10])]  # Am7 Fmaj7 Cmaj7 G7
+melody = [  # (bar, beat, midi) sparse pentatonic phrases
+    (0, 0, 76), (0, 2.5, 72), (1, 1, 74), (1, 3, 72), (2, 0, 71), (2, 2, 76), (3, 1.5, 74),
+    (4, 0, 76), (4, 2, 79), (5, 1, 77), (5, 3, 76), (6, 0.5, 72), (6, 2.5, 74), (7, 1, 71),
+    (8, 0, 72), (8, 2, 76), (9, 1, 74), (9, 3, 72), (10, 0, 69), (10, 2, 71), (11, 1, 72),
+]
+for b in range(BARS):
+    root, ch = prog[b % 4]; t0 = b * bar
+    n = int((bar + 1.2) * SR); x = np.arange(n) / SR
+    envp = np.minimum(x / 1.2, 1) * np.minimum((bar + 1.2 - x) / 1.2, 1)
+    for k in ch:
+        for d in (-0.003, 0.003):
+            add(pad, np.sin(2 * np.pi * f(root + 12 + k) * (1 + d) * x) * envp * 0.06, t0 - 0.6)
+    nb = int(bar * SR); xb = np.arange(nb) / SR
+    add(bass, np.sin(2 * np.pi * f(root - 12) * xb) * np.minimum(xb / 0.05, 1) * np.exp(-xb / 2.5) * 0.45, t0)
+    add(bass, np.sin(2 * np.pi * f(root - 12) * xb) * np.minimum(xb / 0.05, 1) * np.exp(-xb / 1.5) * 0.25, t0 + 2 * beat)
+for b, bt, m in melody:
+    n = int(2.2 * SR); x = np.arange(n) / SR
+    snd = (np.sin(2 * np.pi * f(m) * x) + 0.25 * np.sin(2 * np.pi * f(m) * 2 * x) * np.exp(-x / 0.3)) * np.minimum(x / 0.004, 1) * np.exp(-x / 0.7) * 0.22
+    add(bell, snd, b * bar + bt * beat)
+pad = lp(pad, 0.25)
+mix = pad + bass + bell
+# soft echo on the bell, stereo spread
+d1, d2 = int(0.375 * SR), int(0.5 * SR)
+L = mix + np.roll(bell, d1) * 0.25; R = mix + np.roll(bell, d2) * 0.25
+st = np.stack([L, R], 1); st = (st / np.abs(st).max() * 0.8 * 32767).astype('<i2')
 out = sys.argv[1] if len(sys.argv) > 1 else 'assets/news_bed.mp3'
 p = subprocess.Popen(['ffmpeg', '-v', 'error', '-y', '-f', 's16le', '-ar', str(SR), '-ac', '2', '-i', '-', '-b:a', '160k', out], stdin=subprocess.PIPE)
 p.communicate(st.tobytes())
