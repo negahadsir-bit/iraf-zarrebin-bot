@@ -18,14 +18,14 @@ TEMPLATES = {"gap": "گپ", "yaran": "یاران خراسانی"}
 HEAD = "🎬"
 _LINK = re.compile(r"https?://\S*drive\.google\.com\S*")
 _TRIGGER = re.compile(r"(?is)^\s*(?:رندر|render)(?=\s|$)\s*(.*)$")
-MOODS = ("غمگین", "احساسی", "حماسی", "آرام", "عاشقانه", "نوستالژیک", "انگیزشی", "امیدوار")
-DEFAULT_MOOD = "آرام"
+MOODS = ("غمگین", "احساسی", "حماسی", "ریتمیک", "هیجانی", "سوزناک", "آرام", "عاشقانه", "نوستالژیک", "انگیزشی", "امیدوار")
+DEFAULT_MOOD = "احساسی"
 NEED_TEXT = ("متن گفتار این برش پیدا نشد.\nویدیو را روی پیام پیشنهادیِ همان برش ریپلای کن و در کپشن بنویس «رندر»؛ "
              "یا متن را بعد از «رندر» بیاور.")
 FAILED = "ساخت ویدیو انجام نشد. لطفاً دوباره امتحان کن."
 ASK_TEMPLATE = "این برش در کدام قالب ساخته شود؟"
-ASK_NAME = "نام مهمان را بنویس (روی همین پیام ریپلای کن)"
-ASK_TITLE = "عنوان یا سمت مهمان را بنویس (روی همین پیام ریپلای کن)"
+ASK_NAME = "نام مهمان را بنویس"
+ASK_TITLE = "عنوان یا سمت مهمان را بنویس"
 BAR_LEN = 10
 _FA = str.maketrans("0123456789", "۰۱۲۳۴۵۶۷۸۹")
 
@@ -223,7 +223,7 @@ def start(message: dict, text: str, tg) -> None:
     tg.send_message(chat_id, body, reply_markup=keyboard(), reply_to=message.get("message_id"), entities=ents)
 
 
-def handle_callback(cb: dict, cfg, tg) -> bool:
+def handle_callback(cb: dict, cfg, tg, ask_path=None) -> bool:
     """«tp:<template>» buttons; True when the callback was ours."""
     data = cb.get("data", "")
     if not data.startswith("tp:"):
@@ -238,32 +238,78 @@ def handle_callback(cb: dict, cfg, tg) -> bool:
     try:
         body, ents = build(ASK_NAME, st)
         tg.edit_message(chat_id, msg["message_id"], body, reply_markup={"inline_keyboard": []}, entities=ents)
+        remember_ask(ask_path, chat_id, st)
         tg.answer_callback(cb["id"])
     except Exception:  # noqa: BLE001 - a stale button must never crash the bot
         pass
     return True
 
 
-def handle_reply(message: dict, cfg, tg, make) -> bool:
+def remember_ask(path, chat_id, st: dict) -> None:
+    """The question we are waiting an answer to (name or title), so a plain message without
+    «reply» is still understood as the answer."""
+    if path is None:
+        return
+    data = _load_pending(path)
+    data[str(chat_id)] = {"st": st, "at": time.time()}
+    _save_pending(path, data)
+
+
+def forget_ask(path, chat_id) -> None:
+    if path is None:
+        return
+    data = _load_pending(path)
+    if data.pop(str(chat_id), None) is not None:
+        _save_pending(path, data)
+
+
+def _advance(chat_id, st: dict, answer: str, reply_to, tg, make, ask_path) -> None:
+    """One answer moves the render forward: first the name, then the title (which renders)."""
+    if not st.get("name"):
+        st["name"] = " ".join(answer.split())
+        body, ents = build(ASK_TITLE, st)
+        remember_ask(ask_path, chat_id, st)
+        tg.send_message(chat_id, body, reply_to=reply_to, entities=ents)
+        return
+    st["title"] = " ".join(answer.split())
+    forget_ask(ask_path, chat_id)
+    make(chat_id, st)
+
+
+def handle_reply(message: dict, cfg, tg, make, ask_path=None) -> bool:
     """A reply to one of our questions: first the name, then the title (which renders)."""
     prev = message.get("reply_to_message") or {}
     st = parse(prev)
     answer = (message.get("text") or "").strip()
     if st is None or not st.get("template") or not answer:
         return False
-    chat_id = message["chat"]["id"]
-    if not st.get("name"):
-        st["name"] = " ".join(answer.split())
-        body, ents = build(ASK_TITLE, st)
-        tg.send_message(chat_id, body, reply_to=message.get("message_id"), entities=ents)
-        return True
-    st["title"] = " ".join(answer.split())
-    make(chat_id, st)
+    _advance(message["chat"]["id"], st, answer, message.get("message_id"), tg, make, ask_path)
+    return True
+
+
+_MEDIA = ("video", "document", "audio", "voice", "photo", "video_note", "animation")
+
+
+def handle_loose(message: dict, cfg, tg, make, ask_path) -> bool:
+    """A plain text (no reply needed) answers the question we asked last, for up to PENDING_TTL."""
+    chat_id = message.get("chat", {}).get("id")
+    text = (message.get("text") or "").strip()
+    if ask_path is None or not text or any(k in message for k in _MEDIA) or _LINK.search(text) \
+            or "http" in text or _TRIGGER.match(text):
+        return False
+    item = _load_pending(ask_path).get(str(chat_id))
+    if not item or time.time() - item.get("at", 0) > PENDING_TTL or not isinstance(item.get("st"), dict):
+        return False
+    st = item["st"]
+    if not st.get("template") or not st.get("ref") or not st.get("text"):
+        return False
+    _advance(chat_id, dict(st), text, message.get("message_id"), tg, make, ask_path)
     return True
 
 
 def choose_mood(client, text: str) -> str:
-    prompt = ("حال‌وهوای این گفتار را برای انتخاب موسیقی زمینه تعیین کن. فقط یکی از این‌ها: "
+    prompt = ("حال‌وهوای این گفتار را برای انتخاب موسیقی زمینه تعیین کن. موسیقی ویدیوها باید پرانرژی و "
+              "احساسی باشد؛ «آرام» را فقط وقتی انتخاب کن که گفتار واقعاً آرام و بی‌هیجان است. فقط یکی از این‌ها: "
               + "، ".join(MOODS) + f"\nگفتار:\n{text}\n"
               'فقط JSON برگردان: [{"mood": "..."}]')
     try:
@@ -275,27 +321,84 @@ def choose_mood(client, text: str) -> str:
     return mood if mood in MOODS else DEFAULT_MOOD
 
 
-def pick_music(mood: str, channel_rows: list, tg, workdir: Path, lufs_of, compose, presets, rng=random):
-    """(file, lufs): a channel track tagged with the mood, else an original synthesized bed."""
-    tagged = [r for r in channel_rows if r.get("file_id") and mood in r.get("tags", [])]
-    if tagged:
-        row = rng.choice(tagged)
+_FIX_PROMPT = ("این متن گفتار فارسی محاوره‌ای (با لهجه) است که از روی صدا نوشته شده و ممکن است چند کلمه‌ی "
+               "غلط یا بی‌معنی داشته باشد (مثلاً «خوفی» به جای «خوشی» یا «خود خو» به جای «خودتو»). فقط غلط‌های "
+               "بدیهی را با نزدیک‌ترین کلمه‌ی درست و هم‌صدا اصلاح کن. جمله‌ها را بازنویسی نکن، کلمه‌ی اضافه نیاور و "
+               "چیزی را حذف نکن؛ علائم نگارشی سر جایش بماند. اگر مطمئن نیستی، کلمه را همان‌طور بگذار.\n"
+               "متن:\n%s\nفقط JSON برگردان: [{\"text\": \"متن اصلاح‌شده\"}]")
+MAX_FIXED = 0.15  # more changed words than this share means the model rewrote the text: keep the original
+
+
+def hear_again(client, audio: Path, text: str) -> str:
+    """The caption text checked against the video's own voice; typography cleaned either way."""
+    from persian import normalize_fa
+    from proofread import accept
+    text = normalize_fa(text)
+    try:
+        new = normalize_fa(client.correct_text(audio, text))
+    except Exception as e:  # noqa: BLE001 - a text pass is never worth failing the video
+        print(f"audio text check skipped: {type(e).__name__}", file=sys.stderr, flush=True)
+        return text
+    return new if new and accept(text, new) else text
+
+
+def fix_text(client, text: str) -> str:
+    """Obvious mis-heard words corrected; anything doubtful stays as it was (captions must match the voice)."""
+    from difflib import SequenceMatcher
+    words = text.split()
+    try:
+        rows = client.generate_json(_FIX_PROMPT % text)
+        new = str(rows[0].get("text", "")).split()
+    except Exception as e:  # noqa: BLE001 - a spelling pass is never worth failing the video
+        print(f"text fix skipped: {type(e).__name__}", file=sys.stderr, flush=True)
+        return text
+    if not new:
+        return text
+    out, changed = [], 0
+    for tag, i1, i2, j1, j2 in SequenceMatcher(None, words, new, autojunk=False).get_opcodes():
+        if tag == "equal":
+            out += words[i1:i2]
+        elif (tag == "replace" and i2 - i1 <= 2 and j2 - j1 <= 2
+              and SequenceMatcher(None, "".join(words[i1:i2]), "".join(new[j1:j2])).ratio() >= 0.45):
+            out += new[j1:j2]
+            changed += i2 - i1
+        else:
+            out += words[i1:i2]
+    if changed > max(3, len(words) * MAX_FIXED):
+        return text
+    from persian import normalize_fa
+    return normalize_fa(" ".join(out))
+
+
+def _fetch_url(url: str, dest: Path) -> None:
+    import urllib.request
+    with urllib.request.urlopen(url, timeout=120) as r:
+        Path(dest).write_bytes(r.read())
+
+
+def pick_music(mood: str, channel_rows: list, tg, workdir: Path, lufs_of, rng=random, fetch=_fetch_url):
+    """(file, lufs) of a track from our own library (channel posts and bundled files): one tagged
+    with the mood, else any other; (None, None) when nothing is usable. Music is never synthesized."""
+    usable = [r for r in channel_rows if r.get("file_id") or r.get("url")]
+    ordered = [r for r in usable if mood in r.get("tags", [])] or usable
+    rows = list(ordered)
+    rng.shuffle(rows)
+    for row in rows:
         try:
             dest = Path(workdir) / "music_in.mp3"
-            tg.download(tg.get_file_path(row["file_id"]), dest)
+            if row.get("url"):
+                fetch(row["url"], dest)
+            else:
+                tg.download(tg.get_file_path(row["file_id"]), dest)
             return str(dest), lufs_of(str(dest))
         except Exception as e:  # noqa: BLE001
-            print(f"channel track failed, composing: {type(e).__name__}", file=sys.stderr, flush=True)
-    preset = presets.get(mood, "calm_ambient")
-    row = compose(preset, str(workdir))
-    path = str(Path(workdir) / row["file"])
-    return path, lufs_of(path)
+            print(f"music track failed: {type(e).__name__}", file=sys.stderr, flush=True)
+    return None, None
 
 
 def make_video(chat_id: int, st: dict, tg, align_client, select_client, workdir: Path, music_catalog: Path) -> None:
     """Fetch the clip, time its words, pick music, render and send."""
     import gap_render
-    import music_synth
     try:
         prog = Progress(tg, chat_id, f"ساخت ویدیو · قالب «{TEMPLATES[st['template']]}»")
         workdir = Path(workdir)
@@ -305,6 +408,7 @@ def make_video(chat_id: int, st: dict, tg, align_client, select_client, workdir:
         prog.set(12, "استخراج صدا")
         audio = to_audio(video, workdir / "studio_audio.mp3")
         prog.set(18, "زمان‌بندی کلمات")
+        st = {**st, "text": fix_text(select_client, hear_again(align_client, audio, st["text"]))}
         rows = align_client.align_words(audio, st["text"])
         if not rows:
             raise ValueError("no word times")
@@ -315,8 +419,9 @@ def make_video(chat_id: int, st: dict, tg, align_client, select_client, workdir:
             channel = json.loads(Path(music_catalog).read_text(encoding="utf-8")) if Path(music_catalog).exists() else []
         except (OSError, ValueError):
             channel = []
-        music_file, music_lufs = pick_music(mood, channel, tg, workdir, gap_render.lufs_of, music_synth.compose,
-                                            music_synth.MOOD_TO_PRESET)
+        import music_bundled
+        music_file, music_lufs = pick_music(mood, [*channel, *music_bundled.ROWS], tg, workdir,
+                                            gap_render.lufs_of)
         out = str(workdir / "studio_out.mp4")
         prog.set(45, "طراحی زیرنویس‌ها", force=True)
         gap_render.main(str(video), st["text"], st["name"], st["title"], out, str(workdir / "render"), rows=rows,
