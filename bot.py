@@ -100,21 +100,20 @@ def output(k, v):
 
 TWEET_RE = re.compile(r'https?://(?:www\.|mobile\.)?(?:x|twitter)\.com/[^/\s]+/status/(\d+)\S*')
 
-def review_keyboard(rid):
+def review_keyboard(rid, url=''):
+    rid = rid + (':' + TWEET_RE.search(url).group(1) if url and TWEET_RE.search(url) else '')
     return json.dumps({'inline_keyboard': [[{'text': '✅ تأیید', 'callback_data': f'ok:{rid}'}, {'text': '✏️ اصلاح تیتر', 'callback_data': f'ed:{rid}'}],
                                            [{'text': '🔎 زوم ۱۵٪', 'callback_data': f'zm:{rid}'}, {'text': '🧽 حذف لوگو', 'callback_data': f'dl:{rid}'}],
                                            [{'text': '❌ رد', 'callback_data': f'no:{rid}'}]]})
 
-def recover_review(msg):
-    """The review record lives in state.json, which a cancelled or overlapping run can lose; the message itself carries
-    everything needed (headline, caption, tweet link), so rebuild the record from it."""
+def recover_review(msg, tid):
+    """The review record lives in state.json, which a cancelled or overlapping run can lose; the message carries the headline and
+    caption and the button carries the tweet id, so rebuild the record from those."""
     cap = (msg.get('caption') or '').strip()
-    m = TWEET_RE.search(cap)
-    if not m: return None
-    parts = [x.strip() for x in cap[:m.start()].strip().split('\n\n') if x.strip()]
-    if not parts: return None
+    if not cap or not tid.isdigit(): return None
+    parts = [x.strip() for x in cap.split('\n\n') if x.strip()]
     head = [l for l in parts[0].split('\n') if not l.startswith('⚠️')][0]
-    return {'chat': str(msg['chat']['id']), 'url': m.group(0), 'video_url': '', 'headline': head, 'caption': '\n\n'.join(parts[1:]), 'layout': '', 'fix': ''}
+    return {'chat': str(msg['chat']['id']), 'url': f'https://x.com/i/status/{tid}', 'video_url': '', 'headline': head, 'caption': '\n\n'.join(parts[1:]), 'layout': '', 'fix': ''}
 
 def on_button(s, cq):
     chat = str(cq['message']['chat']['id']); mid = cq['message']['message_id']
@@ -122,7 +121,8 @@ def on_button(s, cq):
     except Exception as e: print('answer failed', e)
     if chat not in ALLOWED: return
     act, _, rid = (cq.get('data') or '').partition(':')
-    rv = s.setdefault('reviews', {}).get(rid) or recover_review(cq['message'])
+    rid, _, tid = rid.partition(':')
+    rv = s.setdefault('reviews', {}).get(rid) or recover_review(cq['message'], tid)
     if rv and rid not in s['reviews']: s['reviews'][rid] = rv
     def mark(txt):
         try: call('editMessageReplyMarkup', {'chat_id': chat, 'message_id': mid, 'reply_markup': json.dumps({'inline_keyboard': [[{'text': txt, 'callback_data': 'x:0'}]]})})
@@ -391,7 +391,7 @@ def render_job(job):
             return
         extra = {}
         if job.get('url'):
-            extra = {'caption': ('' + f"{job['headline']}{caption_note}" + (f"\n\n{job['caption']}" if job.get('caption') else '') + f"\n\n{job['url']}")[:1020], 'reply_markup': review_keyboard(job['id'])}
+            extra = {'caption': ('' + f"{job['headline']}{caption_note}" + (f"\n\n{job['caption']}" if job.get('caption') else '') )[:1020], 'reply_markup': review_keyboard(job['id'], job['url'])}
             REVIEWS[job['id']] = {'chat': job['chat'], 'url': job['url'], 'video_url': job.get('video_url', ''), 'headline': job['headline'], 'caption': job.get('caption', ''), 'layout': layout, 'fix': job.get('fix', '')}
         call('sendVideo', {'chat_id': job['chat'], 'supports_streaming': 'true', 'width': 1080, 'height': 1920, **extra},
              {'video': ('iraftv-zarrebin.mp4', open(out, 'rb').read(), 'video/mp4')}, timeout=300)
