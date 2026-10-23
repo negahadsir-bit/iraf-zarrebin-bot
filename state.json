@@ -1,7 +1,15 @@
 {
- "offset": 292043690,
+ "offset": 292043691,
  "pending": {},
- "jobs": [],
+ "jobs": [
+  {
+   "chat": "6205566163",
+   "url": "https://x.com/osintwarfare/status/2113284376288964984?s=46",
+   "layout": "",
+   "headline": "",
+   "id": "ebcdc68e"
+  }
+ ],
  "reviews": {
   "0278260b": {
    "chat": "6205566163",
