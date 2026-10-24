@@ -98,12 +98,24 @@ def output(k, v):
     p = os.environ.get('GITHUB_OUTPUT')
     if p: open(p, 'a').write(f'{k}={v}\n')
 
+INSTA_RE = re.compile(r'https?://(?:www\.)?instagram\.com/(?:reels?|p|tv)/([A-Za-z0-9_-]+)\S*')
+
+def link_key(text):
+    """('t', tweet id) or ('i', Instagram shortcode) for the first supported link in text, else None."""
+    m = TWEET_RE.search(text or '')
+    if m: return 't' + m.group(1)
+    m = INSTA_RE.search(text or '')
+    return 'i' + m.group(1) if m else None
+
+def key_url(key):
+    return f'https://x.com/i/status/{key[1:]}' if key[0] == 't' else f'https://www.instagram.com/reel/{key[1:]}/'
+
 TWEET_RE = re.compile(r'https?://(?:www\.|mobile\.)?(?:x|twitter)\.com/[^/\s]+/status/(\d+)\S*')
 
 def flags(fix): return {x for x in (fix or '').split(',') if x}
 
 def review_keyboard(rid, url='', fix=''):
-    rid = rid + (':' + TWEET_RE.search(url).group(1) if url and TWEET_RE.search(url) else '')
+    rid = rid + (':' + link_key(url) if link_key(url) else '')
     on = flags(fix)
     mark = lambda k, t: ('✔️ ' if k in on else '') + t
     return json.dumps({'inline_keyboard': [[{'text': '✅ تأیید', 'callback_data': f'ok:{rid}'}, {'text': '✏️ اصلاح تیتر', 'callback_data': f'ed:{rid}'}],
@@ -115,10 +127,11 @@ def recover_review(msg, tid):
     """The review record lives in state.json, which a cancelled or overlapping run can lose; the message carries the headline and
     caption and the button carries the tweet id, so rebuild the record from those."""
     cap = (msg.get('caption') or '').strip()
-    if not cap or not tid.isdigit(): return None
+    if tid.isdigit(): tid = 't' + tid  # buttons made before Instagram support carried the bare tweet id
+    if not cap or not tid[:1] in ('t', 'i') or len(tid) < 2: return None
     parts = [x.strip() for x in cap.split('\n\n') if x.strip()]
     head = [l for l in parts[0].split('\n') if not l.startswith('⚠️')][0]
-    return {'chat': str(msg['chat']['id']), 'url': f'https://x.com/i/status/{tid}', 'video_url': '', 'headline': head, 'caption': '\n\n'.join(parts[1:]), 'layout': '', 'fix': ''}
+    return {'chat': str(msg['chat']['id']), 'url': key_url(tid), 'video_url': '', 'headline': head, 'caption': '\n\n'.join(parts[1:]), 'layout': '', 'fix': ''}
 
 def on_button(s, cq):
     chat = str(cq['message']['chat']['id']); mid = cq['message']['message_id']
@@ -169,10 +182,16 @@ def process(s, timeout=0):
                 continue
             s['pending'][chat] = {'file_id': vid['file_id'], 'at': time.time(), 'step': 'layout'}
             ask_layout(chat)
-        elif TWEET_RE.search(text) and not text.startswith('/'):
+        elif link_key(text) and not text.startswith('/'):
             s['pending'].pop(chat, None)
-            s['jobs'].append({'chat': chat, 'url': TWEET_RE.search(text).group(0), 'layout': '', 'headline': '', 'id': uuid.uuid4().hex[:8]})
-            say(chat, '🔗 لینک را گرفتم؛ ویدیو و متن توییت را می‌گیرم و تیتر پیشنهادی را آماده می‌کنم.')
+            key = link_key(text)
+            same = lambda u: link_key(u) == key
+            if any(same(j.get('url', '')) for j in s['jobs']) or any(same(r.get('url', '')) and r.get('chat') == chat for r in s.get('reviews', {}).values()):
+                say(chat, 'این لینک را قبلاً گرفتم؛ ساخته شده یا در صف است. اگر ویدیوی ساخته‌شده را نمی‌بینی کمی صبر کن (ساخت چند دقیقه طول می‌کشد).')
+                continue
+            m = TWEET_RE.search(text) or INSTA_RE.search(text)
+            s['jobs'].append({'chat': chat, 'url': m.group(0), 'layout': '', 'headline': '', 'id': uuid.uuid4().hex[:8]})
+            say(chat, '🔗 لینک را گرفتم؛ ویدیو و متن را می‌گیرم و تیتر پیشنهادی را آماده می‌کنم.')
         elif text.startswith('/'):
             if text.startswith('/start') or text.startswith('/help'):
                 say(chat, 'سلام 👋\nلینک یک توییت ویدیویی (x.com) بفرست تا خودم ویدیو را بگیرم، تیتر را ترجمه و کوتاه کنم و برای تأیید برایت بفرستم.\nیا اول ویدیو را بفرست، بعد تیتر را در یک پیام متنی بنویس. برای شکستن خط، تیتر را در چند خط بنویس.\nساخت چند دقیقه طول می‌کشد و پیشرفتش را همین‌جا می‌بینی.')
@@ -344,6 +363,21 @@ def add_music(video, work):
                     '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k', '-t', f'{dur:.2f}', out], check=True)
     return out
 
+class NoAccess(Exception): pass
+
+def fetch_instagram(url, work):
+    """Instagram reel/post -> (caption, video file path) through yt-dlp. Instagram often refuses datacenter addresses, then NoAccess."""
+    base = os.path.join(work, 'ig')
+    p = subprocess.run([sys.executable, '-m', 'yt_dlp', '--no-playlist', '--no-warnings', '-f', 'b[ext=mp4]/b', '--write-info-json', '-o', base + '.%(ext)s', url],
+                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=240)
+    print('yt-dlp', p.returncode, p.stdout[-400:], flush=True)
+    vids = [f for f in os.listdir(work) if f.startswith('ig.') and not f.endswith('.json')]
+    if p.returncode or not vids: raise NoAccess()
+    text = ''
+    try: text = json.load(open(base + '.info.json', encoding='utf-8')).get('description') or ''
+    except Exception: pass
+    return text, os.path.join(work, vids[0])
+
 class NoVideo(Exception): pass
 
 def fetch_tweet(url):
@@ -378,7 +412,15 @@ def render_job(job):
         prog = Progress(job['chat'])
         prog.set(5, 'دریافت ویدیو', force=True)
         caption_note = ''
-        if job.get('url'):
+        if job.get('url') and INSTA_RE.search(job['url']):
+            ensure_ytdlp()
+            text, src = fetch_instagram(job['url'], work)
+            if not job.get('headline'):
+                job['headline'], job['caption'] = news_from(clean_caption(text))
+                if not job['headline']:
+                    job['headline'] = fallback_headline(text) or 'تیتر را با «اصلاح تیتر» بنویس'
+                    caption_note = '\n⚠️ ترجمهٔ خودکار انجام نشد؛ با «اصلاح تیتر» درستش کن.'
+        elif job.get('url'):
             if not job.get('video_url'):
                 text, job['video_url'] = fetch_tweet(job['url'])
                 if not job.get('headline'):
@@ -433,6 +475,8 @@ def render():
     for job in s['jobs']:
         try:
             render_job(job)
+        except NoAccess:
+            say(job['chat'], 'اینستاگرام اجازهٔ دریافت این ویدیو را به ربات نداد (معمولاً سرورها را می‌بندد یا پست خصوصی است). ویدیو را خودت دانلود کن و مستقیم برای ربات بفرست.')
         except NoVideo:
             say(job['chat'], 'این توییت ویدیو ندارد (یا خصوصی است).')
         except TooLong:
@@ -453,6 +497,13 @@ def render():
     save(s)
 
 _installed = False
+_ytdlp = False
+def ensure_ytdlp():
+    global _ytdlp
+    if _ytdlp: return
+    subprocess.check_call('python3 -m yt_dlp --version >/dev/null 2>&1 || pip install --break-system-packages -q -U yt-dlp', shell=True)
+    _ytdlp = True
+
 def ensure_renderer():
     global _installed
     if _installed: return
