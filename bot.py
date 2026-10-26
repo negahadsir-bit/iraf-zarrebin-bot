@@ -76,6 +76,48 @@ def say(chat, text):
     try: call('sendMessage', {'chat_id': chat, 'text': text})
     except Exception as e: print('sendMessage failed', e)
 
+def admins(s):
+    """Everyone who may use the bot: the ALLOWED_CHAT_IDS secret plus admins added from inside the bot (kept in state.json)."""
+    return ALLOWED | {str(x) for x in s.get('admins', [])}
+
+ADMIN_HELP = ('👥 مدیریت مدیران\n'
+              '• /admins یا «مدیران» → فهرست مدیران\n'
+              '• /addadmin 123456789 یا «افزودن مدیر 123456789» → اضافه کردن مدیر\n'
+              '• /deladmin 123456789 یا «حذف مدیر 123456789» → حذف مدیر\n'
+              'شناسهٔ عددی را خود شخص با فرستادن یک پیام به ربات می‌گیرد.\n'
+              'هر مدیر همهٔ امکانات ربات را دارد و می‌تواند مدیر اضافه یا حذف کند.')
+
+def admin_command(s, chat, text):
+    """Handle the admin commands; returns True when the message was one of them."""
+    t = text.strip().replace('‌', ' ')
+    digits = ''.join(ch for ch in t.translate(str.maketrans('۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩', '01234567890123456789')) if ch.isdigit() or ch == '-')
+    low = t.lower()
+    if low.startswith('/admins') or t in ('مدیران', 'لیست مدیران', 'فهرست مدیران'):
+        extra = [str(x) for x in s.get('admins', [])]
+        lines = [f'• {x} (اصلی)' for x in sorted(ALLOWED)] + [f'• {x}' for x in extra if x not in ALLOWED]
+        say(chat, '👥 مدیران ربات:\n' + '\n'.join(lines) + '\n\n' + ADMIN_HELP)
+        return True
+    add = low.startswith('/addadmin') or t.startswith('افزودن مدیر') or t.startswith('اضافه کردن مدیر')
+    rem = low.startswith('/deladmin') or low.startswith('/removeadmin') or t.startswith('حذف مدیر')
+    if not (add or rem): return False
+    if not re.fullmatch(r'-?\d{3,20}', digits or ''):
+        say(chat, 'شناسهٔ عددی را بعد از دستور بنویس؛ مثلاً:\n/addadmin 123456789'); return True
+    lst = [str(x) for x in s.setdefault('admins', [])]
+    if add:
+        if digits in admins(s): say(chat, f'{digits} از قبل مدیر است.')
+        else:
+            s['admins'] = lst + [digits]; save(s)
+            say(chat, f'✅ {digits} مدیر شد و از حالا به همهٔ امکانات ربات دسترسی دارد.')
+            say(digits, '👋 شما مدیر ربات «ذره‌بین» شدید.\n' + ADMIN_HELP)
+    else:
+        if digits in ALLOWED: say(chat, f'{digits} مدیر اصلی است و از داخل ربات حذف نمی‌شود.')
+        elif digits not in lst: say(chat, f'{digits} در فهرست مدیران نیست.')
+        elif digits == chat and len(admins(s)) <= 1: say(chat, 'نمی‌توانی آخرین مدیر را حذف کنی.')
+        else:
+            s['admins'] = [x for x in lst if x != digits]; save(s)
+            say(chat, f'🗑 {digits} از مدیران حذف شد.')
+    return True
+
 def load():
     try: return json.load(open(STATE, encoding='utf-8'))
     except Exception: return {'offset': 0, 'pending': {}, 'jobs': []}
@@ -137,7 +179,7 @@ def on_button(s, cq):
     chat = str(cq['message']['chat']['id']); mid = cq['message']['message_id']
     try: call('answerCallbackQuery', {'callback_query_id': cq['id']})
     except Exception as e: print('answer failed', e)
-    if chat not in ALLOWED: return
+    if chat not in admins(s): return
     act, _, rid = (cq.get('data') or '').partition(':')
     rid, _, tid = rid.partition(':')
     rv = s.setdefault('reviews', {}).get(rid) or recover_review(cq['message'], tid)
@@ -171,8 +213,10 @@ def process(s, timeout=0):
         m = u.get('message')
         if not m: continue
         chat = str(m['chat']['id'])
-        if chat not in ALLOWED:
-            say(chat, f'این ربات خصوصی است.\nشناسهٔ چت شما: {chat}')
+        if chat not in admins(s):
+            say(chat, f'این ربات خصوصی است.\nشناسهٔ چت شما: {chat}\nاین عدد را برای یکی از مدیران بفرست تا شما را اضافه کند.')
+            continue
+        if (m.get('text') or '').strip() and admin_command(s, chat, m['text']):
             continue
         vid = m.get('video') or (m.get('document') if str(m.get('document', {}).get('mime_type', '')).startswith('video/') else None)
         text = (m.get('text') or '').strip()
@@ -194,7 +238,7 @@ def process(s, timeout=0):
             say(chat, '🔗 لینک را گرفتم؛ ویدیو و متن را می‌گیرم و تیتر پیشنهادی را آماده می‌کنم.')
         elif text.startswith('/'):
             if text.startswith('/start') or text.startswith('/help'):
-                say(chat, 'سلام 👋\nلینک یک توییت ویدیویی (x.com) بفرست تا خودم ویدیو را بگیرم، تیتر را ترجمه و کوتاه کنم و برای تأیید برایت بفرستم.\nیا اول ویدیو را بفرست، بعد تیتر را در یک پیام متنی بنویس. برای شکستن خط، تیتر را در چند خط بنویس.\nساخت چند دقیقه طول می‌کشد و پیشرفتش را همین‌جا می‌بینی.')
+                say(chat, 'سلام 👋\nلینک یک توییت ویدیویی (x.com) بفرست تا خودم ویدیو را بگیرم، تیتر را ترجمه و کوتاه کنم و برای تأیید برایت بفرستم.\nیا اول ویدیو را بفرست، بعد تیتر را در یک پیام متنی بنویس. برای شکستن خط، تیتر را در چند خط بنویس.\nساخت چند دقیقه طول می‌کشد و پیشرفتش را همین‌جا می‌بینی.\n\n' + ADMIN_HELP)
             elif text.startswith('/cancel'):
                 s['pending'].pop(chat, None); say(chat, 'لغو شد. هر وقت خواستی ویدیوی تازه‌ای بفرست.')
         elif text and s['pending'].get(chat, {}).get('step') == 'edit':
