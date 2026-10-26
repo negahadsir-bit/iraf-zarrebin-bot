@@ -551,9 +551,15 @@ def ensure_ytdlp():
 def ensure_renderer():
     global _installed
     if _installed: return
-    for c in ('python3 -c "import numpy" || pip install --break-system-packages numpy', 'npm install --no-audit --no-fund', 'npx playwright install --with-deps chromium',
-              'which ffmpeg || sudo apt-get install -y ffmpeg'):
-        subprocess.check_call(c, shell=True)
+    # Every step has a time limit: a slow apt mirror once hung a run for 20 minutes, and while it hangs the bot answers nobody.
+    run = lambda c, t: subprocess.run(c, shell=True, check=True, timeout=t)
+    run('python3 -c "import numpy" || pip install --break-system-packages numpy', 180)
+    run('npm install --no-audit --no-fund', 180)
+    run('npx playwright install chromium', 240)  # browser only; cached between runs
+    smoke = 'node -e "import(\'playwright\').then(p=>p.chromium.launch()).then(b=>b.close())"'
+    if subprocess.run(smoke, shell=True, timeout=90).returncode != 0:  # system libraries missing: only then the slow apt step
+        run('npx playwright install-deps chromium', 420)
+    run('which ffmpeg || sudo apt-get install -y ffmpeg', 300)
     _installed = True
 
 def serve(seconds=280):
@@ -577,8 +583,16 @@ def serve(seconds=280):
         if load()['jobs']:
             try:
                 ensure_renderer()
-            except Exception as e:
-                print('renderer install failed', e); time.sleep(10); continue
+            except Exception as e:  # keep answering messages; the queued job waits for the next run
+                print('renderer install failed', e, flush=True)
+                s2 = load()
+                for job in s2['jobs']:
+                    if not job.get('told'):
+                        say(job['chat'], '⏳ ساخت ویدیو کمی عقب افتاد؛ چند دقیقهٔ دیگر خودکار ساخته می‌شود.')
+                        job['told'] = True
+                save(s2)
+                end = min(end, time.time() + 60)  # finish this run soon; the next run (fresh machine) tries again
+                continue
             render()
 
 if __name__ == '__main__':
