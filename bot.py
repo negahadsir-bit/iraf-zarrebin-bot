@@ -589,6 +589,11 @@ def ensure_renderer():
 def serve(seconds=280):
     """Long-poll Telegram for ~seconds, answering immediately; render jobs as soon as they are queued."""
     end = time.time() + seconds
+    try:  # show the commands in Telegram's «/» menu
+        call('setMyCommands', {'commands': json.dumps([{'command': 'start', 'description': 'راهنمای ربات'}, {'command': 'admins', 'description': 'فهرست مدیران'},
+                                                        {'command': 'addadmin', 'description': 'افزودن مدیر: /addadmin شناسه'}, {'command': 'deladmin', 'description': 'حذف مدیر: /deladmin شناسه'},
+                                                        {'command': 'cancel', 'description': 'لغو کار نیمه‌تمام'}], ensure_ascii=False)})
+    except Exception as e: print('setMyCommands failed', e)
     while time.time() < end:
         s = load()
         try:
