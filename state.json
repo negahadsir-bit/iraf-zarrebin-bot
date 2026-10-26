@@ -1,5 +1,5 @@
 {
- "offset": 292043738,
+ "offset": 292043744,
  "pending": {
   "6205566163": {
    "file_id": "BAACAgQAAxkBAAIDMGre--NCyYudeOm744xqMu_-RyLQAAJvHQAC7VX4Ujg4eVXCku5uPQQ",
@@ -7,16 +7,7 @@
    "step": "layout"
   }
  },
- "jobs": [
-  {
-   "chat": "94554237",
-   "file_id": "BAACAgQAAxkBAAIDQ2rfBeQV6ebtnggizb7yMeUWVl2cAAK3HgACcyX4UnUvG8MfQHxqPQQ",
-   "headline": "بقایی: قطری‌ها برای میانجیگری به تهران آمدند",
-   "layout": "land",
-   "id": "7cfa5708",
-   "told": true
-  }
- ],
+ "jobs": [],
  "reviews": {
   "0278260b": {
    "chat": "6205566163",
