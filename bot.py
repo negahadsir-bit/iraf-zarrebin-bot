@@ -340,6 +340,24 @@ def news_from(text):
             print('deepseek failed', e); time.sleep(2)
     return '', ''
 
+def shorten(h, limit):
+    """A shorter version of an automatic headline (at most `limit` characters): DeepSeek first, else cut at «؛» or drop trailing words."""
+    if DEEPSEEK_KEY:
+        try:
+            msgs = [{'role': 'system', 'content': STYLE}, {'role': 'user', 'content': f'این تیتر در دو خط جا نمی‌شود. همان خبر را با حداکثر {limit} نویسه بنویس و فقط JSON با کلید headline بده:\n{h}'}]
+            body = json.dumps({'model': 'deepseek-chat', 'temperature': 0.2, 'max_tokens': 200, 'response_format': {'type': 'json_object'}, 'messages': msgs}).encode()
+            req = urllib.request.Request('https://api.deepseek.com/chat/completions', body, {'Content-Type': 'application/json', 'Authorization': f'Bearer {DEEPSEEK_KEY}'})
+            with urllib.request.urlopen(req, timeout=60) as r: raw = json.load(r)['choices'][0]['message']['content']
+            n = re.sub(r'\s+', ' ', str(json.loads(raw).get('headline', ''))).strip().strip('"«»').rstrip('.')
+            if n and len(n) <= limit: return n
+        except Exception as e:
+            print('shorten failed', e)
+    if '؛' in h and len(h.split('؛')[0].strip()) >= 15: return h.split('؛')[0].strip()
+    words = h.split()
+    while len(' '.join(words)) > limit and len(words) > 3: words.pop()
+    while len(words) > 3 and words[-1] in ('در', 'از', 'به', 'با', 'و', 'برای', 'که', 'را', 'تا', 'بر'): words.pop()
+    return ' '.join(words)
+
 def probe_size(path):
     o = json.loads(subprocess.check_output(['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=width,height', '-of', 'json', path]))['streams'][0]
     return o['width'], o['height']
@@ -461,6 +479,7 @@ def render_job(job):
             text, src = fetch_instagram(job['url'], work)
             if not job.get('headline'):
                 job['headline'], job['caption'] = news_from(clean_caption(text))
+                job['auto'] = True
                 if not job['headline']:
                     job['headline'] = fallback_headline(text) or 'تیتر را با «اصلاح تیتر» بنویس'
                     caption_note = '\n⚠️ ترجمهٔ خودکار انجام نشد؛ با «اصلاح تیتر» درستش کن.'
@@ -469,6 +488,7 @@ def render_job(job):
                 text, job['video_url'] = fetch_tweet(job['url'])
                 if not job.get('headline'):
                     job['headline'], job['caption'] = news_from(clean_caption(text))
+                    job['auto'] = True
                     if not job['headline']:
                         job['headline'] = fallback_headline(text)
                         caption_note = '\n⚠️ ترجمهٔ خودکار انجام نشد؛ متن اصلی کوتاه شده است. با «اصلاح تیتر» درستش کن.'
@@ -482,12 +502,16 @@ def render_job(job):
             for mode in ('delogo', 'zoom'):  # erase overlays first, then zoom
                 if mode in fl: src = clean_source(src, mode, work)
         prog.set(15, 'آماده‌سازی تیتر')
-        h = balance(job['headline']).replace('\n', '|')
         layout = job.get('layout') or ('land' if is_landscape(src) else 'portrait')
         t_out = headline_seconds(video_length(src))
         prog.set(25, 'طراحی تیتر و نشان')
-        p = subprocess.run(['node', os.path.join(HERE, 'render_overlay.mjs'), '--h', h, '--out', work, '--out-time', str(t_out), '--layout', layout, '--strict'], cwd=HERE)
-        if p.returncode == 3: raise TooLong()
+        for attempt in range(4):
+            h = balance(job['headline']).replace('\n', '|')
+            p = subprocess.run(['node', os.path.join(HERE, 'render_overlay.mjs'), '--h', h, '--out', work, '--out-time', str(t_out), '--layout', layout, '--strict'], cwd=HERE)
+            if p.returncode != 3: break
+            if not job.get('auto') or attempt == 3: raise TooLong()
+            job['headline'] = shorten(job['headline'], len(job['headline']) - 8)  # the bot wrote it, so the bot shortens it
+            print('auto headline shortened to', job['headline'], flush=True)
         if p.returncode: raise RuntimeError('overlay render failed')
         prog.set(40, 'ساخت و ترکیب ویدیو', force=True)
         cp = subprocess.Popen([sys.executable, os.path.join(HERE, 'compose.py'), src, work, out, str(round(t_out + 0.95, 2)), layout], stdout=subprocess.PIPE, text=True)
